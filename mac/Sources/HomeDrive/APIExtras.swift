@@ -102,6 +102,11 @@ struct TokenResponse: Codable {
 // MARK: - Endpoints
 
 extension APIClient {
+    func hash(_ path: String) async throws -> String {
+        struct HashResponse: Decodable { let sha256: String }
+        return try await decode(HashResponse.self, makeRequest("hash", query: ["path": path])).sha256
+    }
+
     func tree(_ path: String) async throws -> [Entry] {
         try await decode(EntriesResponse.self, makeRequest("tree", query: ["path": path])).entries
     }

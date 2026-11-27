@@ -22,7 +22,7 @@ struct MainView: View {
         .quickLookPreview($model.previewURL)
         .task {
             await model.refresh()
-            model.startOfflineTimer()
+            model.startOfflineSync()
             await model.syncOffline()
         }
         .modifier(Dialogs())

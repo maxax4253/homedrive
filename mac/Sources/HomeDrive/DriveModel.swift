@@ -519,16 +519,8 @@ final class DriveModel {
     @discardableResult
     func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async -> Bool {
         updateTransfer(id) { $0.state = .active }
-        let progress: ProgressHandler = { done, total in
-            Task { @MainActor in
-                DriveModel.shared.updateTransfer(id) { t in
-                    t.bytesDone = done
-                    if total > 0 { t.bytesTotal = total }
-                }
-            }
-        }
         do {
-            let url = try await work(progress)
+            let url = try await work(transferProgress(id))
             updateTransfer(id) { t in
                 t.state = .done
                 t.localURL = url
@@ -541,6 +533,18 @@ final class DriveModel {
             updateTransfer(id) { $0.state = .failed(message) }
             signOutIfExpired(error)
             return false
+        }
+    }
+
+    /// Progress callback that keeps a transfer row's bytes up to date.
+    func transferProgress(_ id: UUID) -> ProgressHandler {
+        { done, total in
+            Task { @MainActor in
+                DriveModel.shared.updateTransfer(id) { t in
+                    t.bytesDone = done
+                    if total > 0 { t.bytesTotal = total }
+                }
+            }
         }
     }
 

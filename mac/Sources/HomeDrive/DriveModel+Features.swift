@@ -206,31 +206,16 @@ extension DriveModel {
         }
     }
 
-    // MARK: - Offline copies
-
-    func setOffline(_ items: [Entry], _ on: Bool) async {
-        guard let api else { return }
-        if on {
-            await offline.pin(items, api: api)
-        } else {
-            for item in items { offline.unpin(item.path) }
-        }
-    }
-
-    func syncOffline() async {
-        guard let api else { return }
-        await offline.sync(api: api)
-    }
-
-    func startOfflineTimer() {
-        offline.startTimer { [weak self] in self?.api }
-    }
-
     // MARK: - Edit and save back
 
     /// Opens a file in its usual app; every time you save, the new version uploads.
     func openInApp(_ entry: Entry) async {
         guard let api, !entry.isDir else { return }
+        // Kept offline? Open the copy in ~/HomeDrive Offline; offline sync uploads your saves.
+        if offline.isPinned(entry.path), let local = offline.availableCopy(of: entry.path) {
+            NSWorkspace.shared.open(local)
+            return
+        }
         if let existing = editing.session(for: entry.path), FileManager.default.fileExists(atPath: existing.local.path) {
             NSWorkspace.shared.open(existing.local)
             return
@@ -294,7 +279,7 @@ extension DriveModel {
         await refresh()
     }
 
-    private func conflictCopy(of file: URL) throws -> URL {
+    func conflictCopy(of file: URL) throws -> URL {
         let base = file.deletingPathExtension().lastPathComponent
         let ext = file.pathExtension
         let stamp = Date().formatted(.dateTime.month(.abbreviated).day().hour().minute())

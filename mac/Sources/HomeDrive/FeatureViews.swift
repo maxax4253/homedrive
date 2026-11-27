@@ -465,11 +465,11 @@ struct OfflineScreen: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScreenTitle(title: "Offline", trailing: AnyView(syncButton))
+            ScreenTitle(title: "Offline", trailing: AnyView(actions))
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    InfoBanner(icon: "arrow.down.circle",
-                               text: "These are kept on this Mac (\(Format.size(model.offline.totalBytes))) and update every 10 minutes. Double-click to open even without a connection.")
+                    InfoBanner(icon: "arrow.triangle.2.circlepath",
+                               text: "These live in your “HomeDrive Offline” folder (\(Format.size(model.offline.totalBytes))). Open and edit them in any app, even without a connection. Your changes upload automatically, and changes from HomeDrive download every couple of minutes. If a file changes in both places, both copies are kept.")
                     if model.offline.items.isEmpty {
                         EmptyState(icon: "arrow.down.circle", title: "Nothing offline yet",
                                    message: "Right-click a file or folder and choose Make available offline.")
@@ -485,9 +485,13 @@ struct OfflineScreen: View {
         }
     }
 
-    private var syncButton: some View {
+    private var actions: some View {
         HStack(spacing: 10) {
-            if model.offline.isSyncing { ProgressView().controlSize(.small) }
+            if model.offline.isSyncing {
+                ProgressView().controlSize(.small)
+                Text("Syncing…").font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            PillButton(title: "Open folder") { model.offline.revealFolder() }
             PillButton(title: "Sync now") { Task { await model.syncOffline() } }
         }
     }
@@ -512,9 +516,10 @@ struct OfflineRow: View {
                         .foregroundStyle(item.error == nil ? Theme.textSecondary : Color(red: 0.85, green: 0.19, blue: 0.15))
                 }
                 Spacer()
-                Button(item.isDir ? "Show in Finder" : "Open") { model.offline.open(item) }
+                Button("Open") { model.offline.open(item) }
                     .disabled(model.offline.availableCopy(of: item.path) == nil)
-                Button("Remove") { model.offline.unpin(item.path) }
+                Button("Stop keeping offline") { model.offline.unpin(item.path) }
+                    .help("Removes the copy from this Mac. The files stay on HomeDrive.")
             }
             .padding(.vertical, 12)
             .contentShape(Rectangle())
@@ -528,7 +533,7 @@ struct OfflineRow: View {
         var parts = [Format.size(item.bytes)]
         if item.isDir { parts.append("\(item.fileCount) file\(item.fileCount == 1 ? "" : "s")") }
         if let synced = item.lastSync {
-            parts.append("updated \(Format.date(Date(timeIntervalSince1970: synced)))")
+            parts.append("synced \(Format.date(Date(timeIntervalSince1970: synced)))")
         } else {
             parts.append("downloading…")
         }

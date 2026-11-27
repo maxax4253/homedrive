@@ -58,7 +58,7 @@ Bump `CFBundleShortVersionString` in `mac/Info.plist` and push to `main`. GitHub
 
 **Offline and editing:**
 
-- **Make available offline** keeps a file or folder on your Mac and refreshes it every 10 minutes. See them on the **Offline** page, which works without a connection.
+- **Make available offline** keeps a file or folder in a normal **`~/HomeDrive Offline`** folder and syncs it both ways, like Google Drive or Dropbox. Edit with any app, even with no connection, and your changes upload a few seconds after you save (or when you're back online). Changes from HomeDrive download every couple of minutes. New files you add upload; files you delete go to HomeDrive's Trash. If a file changed in both places, both copies are kept as "(conflict …)", so nothing is overwritten. If lots of files vanish at once, or you delete the whole folder, nothing is deleted on HomeDrive.
 - **Open in app (saves back)** opens a file in its normal app (Pages, Word, Preview…). Every time you save, the new version uploads and the previous one goes into version history. If someone changed it on the server meanwhile, yours is saved as a separate "(conflict …)" copy instead of overwriting.
 
 Google Drive-style layout:

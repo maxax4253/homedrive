@@ -444,9 +444,12 @@ struct ItemMenu: View {
             Button(allStarred ? "Remove from Starred" : "Add to Starred") {
                 Task { await model.setStarred(items, !allStarred) }
             }
-            let allOffline = items.allSatisfy { model.offline.isPinned($0.path) }
-            Button(allOffline ? "Remove offline copy" : "Make available offline") {
-                Task { await model.setOffline(items, !allOffline) }
+            if items.allSatisfy({ model.offline.isPinnedRoot($0.path) }) {
+                Button("Remove offline copy") { Task { await model.setOffline(items, false) } }
+            } else if items.allSatisfy({ model.offline.isPinned($0.path) }) {
+                Button("Kept offline with its folder") {}.disabled(true)
+            } else {
+                Button("Make available offline") { Task { await model.setOffline(items, true) } }
             }
             Divider()
             Button("Move to trash", role: .destructive) { model.deleting = items }

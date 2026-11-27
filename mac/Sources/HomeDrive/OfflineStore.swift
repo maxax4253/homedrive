@@ -1,11 +1,14 @@
 import AppKit
+import CoreServices
 import Foundation
 import Observation
 
-/// Files and folders you chose to keep on this Mac ("Make available offline").
+/// Files and folders kept on this Mac and synced both ways ("Make available offline").
 ///
-/// Copies live in ~/Library/Application Support/HomeDrive/Offline/<account>/Files and
-/// are refreshed from the server every 10 minutes (and when you press Sync now).
+/// They live in a normal folder, ~/HomeDrive Offline, so any app can open and edit
+/// them. The sync logic itself is in DriveModel+Offline.swift; this class holds the
+/// pinned list, what each file looked like at the last sync (the "baseline"), and
+/// watches the folder for changes.
 @MainActor
 @Observable
 final class OfflineStore {
@@ -21,28 +24,50 @@ final class OfflineStore {
         var id: String { path }
     }
 
-    private struct FileState: Codable {
-        var modified: Double
-        var size: Int64
+    /// What a file looked like on both sides right after it was last in sync.
+    struct Baseline: Codable {
+        var serverModified: Double
+        var serverSize: Int64
+        var localModified: Double
+        var localSize: Int64
+    }
+
+    struct LocalFile {
+        let url: URL
+        let modified: Double
+        let size: Int64
     }
 
     private struct SavedState: Codable {
         var items: [Item]
-        var files: [String: FileState]
+        var baselines: [String: Baseline]
     }
 
     private(set) var items: [Item] = []
-    private(set) var isSyncing = false
-    private var files: [String: FileState] = [:]
-    private var baseDir: URL?
-    private var timer: Timer?
+    var isSyncing = false
+    /// A change arrived while a sync was running: run again when it finishes.
+    @ObservationIgnored var syncRequested = false
+    /// Set by the model: called when local files change or the poll timer fires.
+    @ObservationIgnored var onNeedsSync: (() -> Void)?
+
+    @ObservationIgnored private(set) var baselines: [String: Baseline] = [:]
+    @ObservationIgnored private var stateFile: URL?
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var stream: FSEventStreamRef?
+    @ObservationIgnored private var pendingWork: DispatchWorkItem?
+
+    /// ~/HomeDrive Offline: a normal folder you can open in Finder.
+    let filesDir: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("HomeDrive Offline", isDirectory: true)
 
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.bytes } }
 
     func configure(account: String) {
         let safe = account.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
-        baseDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("HomeDrive/Offline/\(safe)", isDirectory: true)
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HomeDrive/Offline", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        stateFile = dir.appendingPathComponent("\(safe).json")
         load()
     }
 
@@ -56,128 +81,164 @@ final class OfflineStore {
         items.contains { $0.path == path }
     }
 
-    func localURL(for path: String) -> URL? {
-        baseDir?.appendingPathComponent("Files", isDirectory: true).appendingPathComponent(path)
+    func localURL(for path: String) -> URL {
+        filesDir.appendingPathComponent(path)
     }
 
     /// A local copy you can open right now (nil if it hasn't downloaded yet).
     func availableCopy(of path: String) -> URL? {
-        guard let url = localURL(for: path), FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url
+        let url = localURL(for: path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Server path for a file inside ~/HomeDrive Offline.
+    func serverPath(for url: URL) -> String? {
+        let base = filesDir.standardizedFileURL.pathComponents
+        let parts = url.standardizedFileURL.pathComponents
+        guard parts.count > base.count, Array(parts.prefix(base.count)) == base else { return nil }
+        return parts.dropFirst(base.count).joined(separator: "/")
+    }
+
+    /// Every file currently on disk for one pinned item, keyed by server path.
+    func localFiles(under root: Item) -> [String: LocalFile] {
+        let rootURL = localURL(for: root.path)
+        var result: [String: LocalFile] = [:]
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+        func add(_ url: URL) {
+            let name = url.lastPathComponent
+            // Skip system junk and Office/LibreOffice lock files.
+            guard !name.hasPrefix("."), !name.hasPrefix("~$") else { return }
+            guard let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true,
+                  let path = serverPath(for: url) else { return }
+            result[path] = LocalFile(url: url,
+                                     modified: v.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                                     size: Int64(v.fileSize ?? 0))
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDir) else { return [:] }
+        if !isDir.boolValue {
+            add(rootURL)
+            return result
+        }
+        if let walker = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: keys,
+                                                       options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            for case let url as URL in walker { add(url) }
+        }
+        return result
+    }
+
+    func rootExistsLocally(_ root: Item) -> Bool {
+        FileManager.default.fileExists(atPath: localURL(for: root.path).path)
+    }
+
+    // MARK: - Baselines
+
+    func baseline(_ path: String) -> Baseline? { baselines[path] }
+
+    func setBaseline(_ path: String, _ b: Baseline?) {
+        baselines[path] = b
+    }
+
+    func baselinePaths(under root: String) -> [String] {
+        baselines.keys.filter { $0 == root || $0.hasPrefix(root + "/") }
+    }
+
+    func update(_ path: String, _ change: (inout Item) -> Void) {
+        if let i = items.firstIndex(where: { $0.path == path }) { change(&items[i]) }
     }
 
     // MARK: - Pinning
 
-    func pin(_ entries: [Entry], api: APIClient) async {
+    func pin(_ entries: [Entry]) {
         for entry in entries where !isPinned(entry.path) {
             // Pinning a folder covers anything inside it that was pinned on its own.
             items.removeAll { $0.path.hasPrefix(entry.path + "/") }
             items.append(Item(path: entry.path, name: entry.name, isDir: entry.isDir))
         }
         save()
-        await sync(api: api)
     }
 
+    /// Stop keeping it offline. Removes the local copy (the server copy is untouched).
     func unpin(_ path: String) {
         items.removeAll { $0.path == path }
-        for key in files.keys where key == path || key.hasPrefix(path + "/") {
-            files.removeValue(forKey: key)
-        }
-        if let url = localURL(for: path) { try? FileManager.default.removeItem(at: url) }
+        for key in baselinePaths(under: path) { baselines.removeValue(forKey: key) }
+        try? FileManager.default.removeItem(at: localURL(for: path))
         save()
     }
 
-    func removeAll() {
-        for item in items { unpin(item.path) }
+    /// Forget a pin without touching any files (used when its local folder disappeared).
+    func forget(_ path: String) {
+        items.removeAll { $0.path == path }
+        for key in baselinePaths(under: path) { baselines.removeValue(forKey: key) }
+        save()
     }
 
-    // MARK: - Syncing
+    // MARK: - Watching for changes
 
-    func startTimer(api: @escaping @MainActor () -> APIClient?) {
+    /// Poll the server every 2 minutes and watch ~/HomeDrive Offline for edits.
+    func startWatching() {
+        try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let client = api() else { return }
-                await self.sync(api: client)
+        timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.onNeedsSync?() }
+        }
+        guard stream == nil else { return }
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info else { return }
+            let store = Unmanaged<OfflineStore>.fromOpaque(info).takeUnretainedValue()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { store.localFolderChanged() }
             }
         }
+        let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+        guard let created = FSEventStreamCreate(nil, callback, &context, [filesDir.path] as CFArray,
+                                                FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1.0, flags) else { return }
+        FSEventStreamSetDispatchQueue(created, DispatchQueue.main)
+        FSEventStreamStart(created)
+        stream = created
     }
 
-    /// Download anything new or changed, and delete local copies of things removed on the server.
-    func sync(api: APIClient) async {
-        guard !isSyncing, !items.isEmpty else { return }
-        isSyncing = true
-        defer { isSyncing = false; save() }
+    /// Something changed in ~/HomeDrive Offline: sync a few seconds after it settles.
+    func localFolderChanged() {
+        guard !items.isEmpty else { return }
+        scheduleSync(after: 3)
+    }
 
-        for root in items {
-            // Look the item up again after each await, in case it was removed meanwhile.
-            func update(_ change: (inout Item) -> Void) {
-                if let i = items.firstIndex(where: { $0.path == root.path }) { change(&items[i]) }
-            }
-            do {
-                let remote = try await api.tree(root.path)
-                var bytes: Int64 = 0
-                var seen = Set<String>()
-                for entry in remote where !entry.isDir {
-                    guard isPinnedRoot(root.path) else { break }  // removed while syncing
-                    seen.insert(entry.path)
-                    bytes += entry.size
-                    let known = files[entry.path]
-                    let local = localURL(for: entry.path)
-                    let exists = local.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-                    if !exists || known?.modified != entry.modified || known?.size != entry.size {
-                        guard let local else { continue }
-                        try await api.download(entry.path, to: local)
-                        try? FileManager.default.setAttributes([.modificationDate: entry.modifiedDate], ofItemAtPath: local.path)
-                        files[entry.path] = FileState(modified: entry.modified, size: entry.size)
-                    }
-                }
-                // Remove local files that no longer exist on the server.
-                for key in files.keys where (key == root.path || key.hasPrefix(root.path + "/")) && !seen.contains(key) {
-                    files.removeValue(forKey: key)
-                    if let url = localURL(for: key) { try? FileManager.default.removeItem(at: url) }
-                }
-                update { item in
-                    item.bytes = bytes
-                    item.fileCount = seen.count
-                    item.lastSync = Date().timeIntervalSince1970
-                    item.error = nil
-                }
-            } catch let error as APIError where error.status == 404 {
-                update { $0.error = "No longer on the server" }
-            } catch {
-                let message = "Couldn't sync: \(error.localizedDescription)"
-                update { $0.error = message }
-            }
+    func scheduleSync(after seconds: Double) {
+        pendingWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.onNeedsSync?() }
         }
+        pendingWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
     func open(_ item: Item) {
         guard let url = availableCopy(of: item.path) else { return }
-        if item.isDir {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
-            NSWorkspace.shared.open(url)
-        }
+        NSWorkspace.shared.open(url)
+    }
+
+    func revealFolder() {
+        try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(filesDir)
     }
 
     // MARK: - Persistence
 
-    private var stateFile: URL? { baseDir?.appendingPathComponent("offline.json") }
-
     private func load() {
         items = []
-        files = [:]
+        baselines = [:]
         guard let stateFile, let data = try? Data(contentsOf: stateFile),
               let state = try? JSONDecoder().decode(SavedState.self, from: data) else { return }
         items = state.items
-        files = state.files
+        baselines = state.baselines
     }
 
-    private func save() {
-        guard let baseDir, let stateFile else { return }
-        try? FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(SavedState(items: items, files: files)) {
+    func save() {
+        guard let stateFile else { return }
+        if let data = try? JSONEncoder().encode(SavedState(items: items, baselines: baselines)) {
             try? data.write(to: stateFile, options: .atomic)
         }
     }

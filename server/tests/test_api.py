@@ -190,3 +190,17 @@ def test_starred(env):
     client.post("/api/star", json={"path": "Papers/cv.pdf", "starred": False})
     assert client.get("/api/starred").json()["entries"] == []
     assert client.post("/api/star", json={"path": "nope.txt"}).status_code == 404
+
+
+def test_upload_returns_sha256(env):
+    import hashlib
+
+    client, files = env
+    data = b"offload me" * 10000
+    r = client.post("/api/upload", files=[("files", ("big.bin", data))])
+    saved = r.json()["saved"][0]
+    assert saved["sha256"] == hashlib.sha256(data).hexdigest()
+    assert saved["size"] == len(data)
+    h = client.get("/api/hash", params={"path": "big.bin"}).json()
+    assert h["sha256"] == saved["sha256"]
+    assert not any(p.name.startswith(".upload-") for p in files.iterdir())

@@ -147,7 +147,7 @@ struct TransferRow: View {
             }
             return transfer.bytesDone > 0 ? Format.size(transfer.bytesDone) : nil
         case .done:
-            return nil
+            return transfer.note
         case .failed(let message):
             return message
         }

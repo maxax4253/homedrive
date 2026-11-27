@@ -1,5 +1,6 @@
 """HomeDrive API server."""
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -59,7 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     thumbs_dir.mkdir(parents=True, exist_ok=True)
 
     stars = Stars(settings.data_dir)
-    app = FastAPI(title="HomeDrive", version="0.3.0")
+    app = FastAPI(title="HomeDrive", version="0.4.0")
 
     def mark(entries: list[dict]) -> list[dict]:
         for e in entries:
@@ -182,11 +183,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Write to a temp file first so a dropped upload never leaves half a file.
             with tempfile.NamedTemporaryFile(dir=folder, prefix=".upload-", delete=False) as tmp:
                 shutil.copyfileobj(f.file, tmp, length=1024 * 1024)
+                tmp.flush()
+                os.fsync(tmp.fileno())
                 tmp_path = Path(tmp.name)
             tmp_path.chmod(0o644)
             tmp_path.rename(dest)
-            saved.append(storage.entry(root, dest))
-        return {"saved": saved}
+            e = storage.entry(root, dest)
+            # Fingerprint of what's actually on disk, so the app can confirm a
+            # perfect copy before deleting anything from your Mac.
+            e["sha256"] = storage.sha256(dest)
+            saved.append(e)
+        return {"saved": mark(saved)}
+
+    @app.get("/api/hash")
+    def file_hash(path: str, user: str = Depends(require_user)):
+        p = safe(path)
+        if not p.is_file():
+            raise HTTPException(404, "File not found")
+        return {"path": path, "size": p.stat().st_size, "sha256": storage.sha256(p)}
 
     @app.post("/api/mkdir")
     def mkdir(body: PathBody, user: str = Depends(require_user)):

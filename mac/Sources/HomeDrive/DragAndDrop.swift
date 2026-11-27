@@ -7,12 +7,8 @@ extension UTType {
     static let homeDriveItem = UTType(exportedAs: "com.maxkaplan.homedrive.item")
 }
 
-/// What gets dragged when you pick up a file or folder.
-///
-/// Inside HomeDrive it travels as a small JSON record (so dropping on a folder
-/// moves it). Dropped into Finder, it's downloaded first and arrives as a real
-/// file; folders arrive as a .zip.
-struct DraggedItem: Codable, Transferable {
+/// One file or folder inside a drag.
+struct DraggedItem: Codable, Hashable {
     let path: String
     let name: String
     let isDir: Bool
@@ -22,14 +18,30 @@ struct DraggedItem: Codable, Transferable {
         name = entry.name
         isDir = entry.isDir
     }
+}
+
+/// What gets dragged: the item you grabbed, or the whole selection if it was selected.
+///
+/// Inside HomeDrive it travels as a small JSON record (so dropping on a folder moves
+/// everything). Dropped into Finder it's downloaded first: one file arrives as itself,
+/// a folder or several items arrive as a single .zip.
+struct DraggedItems: Codable, Transferable {
+    let items: [DraggedItem]
+
+    var suggestedName: String {
+        if items.count == 1, let only = items.first {
+            return only.isDir ? only.name + ".zip" : only.name
+        }
+        return "HomeDrive items.zip"
+    }
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .homeDriveItem)
-        FileRepresentation(exportedContentType: .data) { item in
-            let url = try await DriveModel.shared.exportForDrag(item)
+        FileRepresentation(exportedContentType: .data) { dragged in
+            let url = try await DriveModel.shared.exportForDrag(dragged)
             return SentTransferredFile(url)
         }
-        .suggestedFileName { $0.isDir ? $0.name + ".zip" : $0.name }
+        .suggestedFileName { $0.suggestedName }
     }
 }
 
@@ -40,8 +52,8 @@ struct FolderDropTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .dropDestination(for: DraggedItem.self) { items, _ in
-                let movable = items.filter { $0.path != folderPath }
+            .dropDestination(for: DraggedItems.self) { drops, _ in
+                let movable = drops.flatMap(\.items).filter { $0.path != folderPath }
                 guard !movable.isEmpty else { return false }
                 Task { await model.move(movable, into: folderPath) }
                 return true
@@ -62,24 +74,46 @@ extension View {
 
     /// Makes a row/card draggable: into Finder (downloads it) or onto a folder (moves it).
     func draggableEntry(_ entry: Entry) -> some View {
-        draggable(DraggedItem(entry)) {
-            DragPreview(entry: entry)
+        modifier(DraggableEntry(entry: entry))
+    }
+}
+
+struct DraggableEntry: ViewModifier {
+    @Environment(DriveModel.self) private var model
+    let entry: Entry
+
+    /// Dragging a selected item drags the whole selection, like Finder and Drive.
+    private var payload: [Entry] {
+        model.selection.contains(entry.id) ? model.selectedEntries : [entry]
+    }
+
+    func body(content: Content) -> some View {
+        let items = payload
+        return content.draggable(DraggedItems(items: items.map(DraggedItem.init))) {
+            DragPreview(entries: items)
         }
     }
 }
 
 struct DragPreview: View {
-    let entry: Entry
+    let entries: [Entry]
 
     var body: some View {
         HStack(spacing: 10) {
-            FileGlyph(entry: entry, size: 18)
-            Text(entry.name)
+            if let first = entries.first {
+                FileGlyph(entry: first, size: 18)
+            }
+            Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Theme.rowSelected, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var title: String {
+        if entries.count == 1, let only = entries.first { return only.name }
+        return "\(entries.count) items"
     }
 }

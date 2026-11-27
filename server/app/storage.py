@@ -241,6 +241,14 @@ def search(root: Path, query: str, limit: int = 200) -> list[dict]:
     return results
 
 
+def sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        while chunk := f.read(4 * 1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def thumb_key(p: Path, size: int) -> str:
     st = p.stat()
     raw = f"{p}:{st.st_mtime_ns}:{st.st_size}:{size}"

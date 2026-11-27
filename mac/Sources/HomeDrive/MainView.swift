@@ -105,6 +105,8 @@ struct NewMenu: View {
             Divider().padding(.vertical, 6)
             MenuRow(icon: "arrow.up.doc", title: "File upload", shortcut: "⌘U") { model.pickFilesToUpload() }
             MenuRow(icon: "folder", title: "Folder upload", shortcut: "⇧⌘U") { model.pickFolderToUpload() }
+            Divider().padding(.vertical, 6)
+            MenuRow(icon: "tray.and.arrow.up", title: "Move from Mac…", shortcut: "⌥⌘U") { model.pickFilesToOffload() }
         }
         .padding(.vertical, 8)
         .frame(width: 280)
@@ -193,6 +195,12 @@ struct StorageBox: View {
                 Text("\(Format.size(s.used)) of \(Format.size(s.total)) used")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)
+                if model.freedBytes > 0 {
+                    Label("Freed \(Format.size(model.freedBytes)) on this Mac", systemImage: "leaf")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color(red: 0.12, green: 0.56, blue: 0.24))
+                        .padding(.top, 4)
+                }
             }
         }
     }
@@ -332,6 +340,7 @@ struct KeyboardShortcuts: View {
             Button("") { if model.canUpload { model.startNewFolder() } }.keyboardShortcut("n", modifiers: [.command, .shift])
             Button("") { if model.canUpload { model.pickFilesToUpload() } }.keyboardShortcut("u", modifiers: .command)
             Button("") { if model.canUpload { model.pickFolderToUpload() } }.keyboardShortcut("u", modifiers: [.command, .shift])
+            Button("") { model.pickFilesToOffload() }.keyboardShortcut("u", modifiers: [.command, .option])
         }
         .opacity(0)
         .frame(width: 0, height: 0)

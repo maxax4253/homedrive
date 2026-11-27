@@ -62,6 +62,15 @@ struct EntriesResponse: Codable {
     let entries: [Entry]
 }
 
+struct UploadResult: Decodable {
+    struct Saved: Decodable {
+        let path: String
+        let size: Int64
+        let sha256: String?
+    }
+    let saved: [Saved]
+}
+
 struct LoginResponse: Codable {
     let token: String
     let username: String
@@ -118,6 +127,8 @@ struct Transfer: Identifiable {
     var bytesTotal: Int64 = -1
     /// For finished downloads: where the file was saved.
     var localURL: URL?
+    /// Extra status shown under the name when done, e.g. "Verified · moved to Trash".
+    var note: String?
 
     var fraction: Double? {
         guard bytesTotal > 0 else { return nil }

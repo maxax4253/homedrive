@@ -395,8 +395,9 @@ final class DriveModel {
         change(&transfers[i])
     }
 
-    /// Runs one transfer, keeping its row in the popup up to date.
-    private func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async {
+    /// Runs one transfer, keeping its row in the popup up to date. Returns true on success.
+    @discardableResult
+    private func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async -> Bool {
         updateTransfer(id) { $0.state = .active }
         let progress: ProgressHandler = { done, total in
             Task { @MainActor in
@@ -413,9 +414,11 @@ final class DriveModel {
                 t.localURL = url
                 if t.bytesTotal > 0 { t.bytesDone = t.bytesTotal }
             }
+            return true
         } catch {
             let message = friendly(error)
             updateTransfer(id) { $0.state = .failed(message) }
+            return false
         }
     }
 
@@ -465,54 +468,152 @@ final class DriveModel {
 
     /// Uploads files and folders from the Mac into `folder` (default: where you are).
     func upload(_ urls: [URL], into folder: String? = nil) async {
-        guard let api else { return }
-        let target = folder ?? uploadTarget
+        _ = await uploadItems(urls, into: folder ?? uploadTarget, offloading: false)
+        await refresh()
+    }
+
+    /// "Move to HomeDrive": upload, confirm every file arrived intact, then move the
+    /// originals to the Mac's Trash. Anything that can't be verified stays put.
+    func offload(_ urls: [URL]) async {
+        guard api != nil else {
+            errorMessage = "Sign in to HomeDrive first, then try Move to HomeDrive again."
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let target = canUpload ? uploadTarget : ""
+        let sizes = Dictionary(urls.map { ($0, diskSize($0)) }, uniquingKeysWith: { first, _ in first })
+        let verified = await uploadItems(urls, into: target, offloading: true)
+
+        var trashed: [URL] = []
+        for url in urls where verified.contains(url) {
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                trashed.append(url)
+            } catch {
+                errorMessage = "\(url.lastPathComponent) was uploaded and verified, but couldn't be moved to the Trash: \(error.localizedDescription)"
+            }
+        }
+        let freed = trashed.reduce(Int64(0)) { $0 + (sizes[$1] ?? 0) }
+        addFreedBytes(freed)
+        markOffloaded(trashed)
+
+        let failed = urls.count - verified.count
+        if failed > 0 {
+            errorMessage = "\(failed) item\(failed == 1 ? "" : "s") couldn't be verified, so \(failed == 1 ? "it was" : "they were") left on your Mac. Check the transfers list for details."
+        }
+        await refresh()
+    }
+
+    func pickFilesToOffload() {
+        showNewMenu = false
+        let panel = NSOpenPanel()
+        panel.title = "Move to HomeDrive"
+        panel.message = "These will be uploaded, checked, and then moved to your Mac's Trash."
+        panel.prompt = "Move"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        Task { await offload(urls) }
+    }
+
+    /// Transfer rows for each top-level item, so we can label them after trashing.
+    private var offloadRows: [URL: [UUID]] = [:]
+
+    /// Uploads everything and returns the top-level items whose every file was verified.
+    private func uploadItems(_ urls: [URL], into target: String, offloading: Bool) async -> Set<URL> {
+        guard let api else { return [] }
         // Never re-upload files we just exported for a drag out of HomeDrive.
         let toUpload = urls.filter { !$0.path.hasPrefix(dragOutDir.path) }
-        guard !toUpload.isEmpty else { return }
+        guard !toUpload.isEmpty else { return [] }
 
-        var files: [(URL, String)] = []
-        var folders: [String] = []
-        for url in toUpload { collect(url, into: target, files: &files, folders: &folders) }
+        var files: [(file: URL, folder: String, root: URL)] = []
+        var folders: [(path: String, root: URL)] = []
+        for url in toUpload { collect(url, root: url, into: target, files: &files, folders: &folders) }
 
-        for newFolder in folders {
-            do { try await api.mkdir(newFolder) } catch let e as APIError where e.status == 409 {
+        var failedRoots = Set<URL>()
+        for item in folders {
+            do { try await api.mkdir(item.path) } catch let e as APIError where e.status == 409 {
                 _ = e // already exists, that's fine
             } catch {
                 errorMessage = friendly(error)
-                return
+                failedRoots.insert(item.root)
             }
         }
 
         transfersCollapsed = false
-        let ids = files.map { file, _ in
-            addTransfer(Transfer(name: file.lastPathComponent, kind: .upload, isFolder: false, bytesTotal: fileSize(file)))
+        let ids = files.map { item in
+            addTransfer(Transfer(name: item.file.lastPathComponent, kind: .upload, isFolder: false, bytesTotal: fileSize(item.file)))
         }
-        for ((file, destination), id) in zip(files, ids) {
-            await runTransfer(id) { progress in
-                try await api.upload(file: file, to: destination, progress: progress)
+        for (item, id) in zip(files, ids) {
+            offloadRows[item.root, default: []].append(id)
+            let ok = await runTransfer(id) { progress in
+                try await api.upload(file: item.file, to: item.folder, progress: progress)
                 return nil
             }
+            if ok {
+                updateTransfer(id) { $0.note = "Verified" }
+            } else {
+                failedRoots.insert(item.root)
+            }
         }
-        await refresh()
+        return Set(toUpload).subtracting(failedRoots)
+    }
+
+    private func markOffloaded(_ roots: [URL]) {
+        for root in roots {
+            for id in offloadRows[root] ?? [] {
+                updateTransfer(id) { $0.note = "Verified · moved to Mac Trash" }
+            }
+            offloadRows[root] = nil
+        }
     }
 
     private func fileSize(_ url: URL) -> Int64 {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? -1
     }
 
-    private func collect(_ url: URL, into folder: String, files: inout [(URL, String)], folders: inout [String]) {
+    /// Size of a file, or everything inside a folder.
+    private func diskSize(_ url: URL) -> Int64 {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        guard isDir.boolValue else { return max(0, fileSize(url)) }
+        var total: Int64 = 0
+        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey]
+        if let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) {
+            for case let child as URL in walker {
+                let values = try? child.resourceValues(forKeys: Set(keys))
+                if values?.isRegularFile == true { total += Int64(values?.fileSize ?? 0) }
+            }
+        }
+        return total
+    }
+
+    private func collect(_ url: URL, root: URL, into folder: String,
+                         files: inout [(file: URL, folder: String, root: URL)],
+                         folders: inout [(path: String, root: URL)]) {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return }
         if isDir.boolValue {
             let sub = folder.isEmpty ? url.lastPathComponent : "\(folder)/\(url.lastPathComponent)"
-            folders.append(sub)
+            folders.append((sub, root))
             let children = (try? FileManager.default.contentsOfDirectory(
                 at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
-            for child in children { collect(child, into: sub, files: &files, folders: &folders) }
+            for child in children { collect(child, root: root, into: sub, files: &files, folders: &folders) }
         } else {
-            files.append((url, folder))
+            files.append((url, folder, root))
         }
+    }
+
+    // MARK: - Space freed
+
+    private(set) var freedBytes: Int64 = Int64(UserDefaults.standard.double(forKey: "freedBytes"))
+
+    private func addFreedBytes(_ n: Int64) {
+        guard n > 0 else { return }
+        freedBytes += n
+        UserDefaults.standard.set(Double(freedBytes), forKey: "freedBytes")
     }
 
     func newFolder(named name: String) async {
@@ -636,17 +737,17 @@ final class DriveModel {
             .appendingPathComponent("HomeDrive/DragOut", isDirectory: true)
     }
 
-    /// Downloads an item so it can be dropped into Finder. Folders come out as a zip.
-    func exportForDrag(_ item: DraggedItem) async throws -> URL {
+    /// Downloads dragged items so they can be dropped into Finder.
+    /// One file comes out as itself; a folder or several items come out as one zip.
+    func exportForDrag(_ dragged: DraggedItems) async throws -> URL {
         guard let api else { throw APIError(message: "Not signed in", status: 401) }
         let dir = dragOutDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        if item.isDir {
-            let dest = dir.appendingPathComponent(item.name + ".zip")
-            try await api.downloadZip([item.path], to: dest)
-            return dest
+        let dest = dir.appendingPathComponent(dragged.suggestedName)
+        if dragged.items.count == 1, let only = dragged.items.first, !only.isDir {
+            try await api.download(only.path, to: dest)
+        } else {
+            try await api.downloadZip(dragged.items.map(\.path), to: dest)
         }
-        let dest = dir.appendingPathComponent(item.name)
-        try await api.download(item.path, to: dest)
         return dest
     }
 

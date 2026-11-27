@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Manage the HomeDrive server.  Usage: homedrive <command>
+set -euo pipefail
+
+DIR="${HOMEDRIVE_DIR:-$HOME/homedrive}"
+SERVER="$DIR/server"
+[ -d "$SERVER" ] || { echo "HomeDrive isn't installed in $DIR (set HOMEDRIVE_DIR if you moved it)."; exit 1; }
+cd "$SERVER"
+
+# Use sudo only if this user can't talk to Docker yet (e.g. right after install).
+DOCKER="docker"
+docker info >/dev/null 2>&1 || DOCKER="sudo docker"
+compose() { $DOCKER compose --env-file .env "$@"; }
+
+address() {
+  local ip
+  ip=$(grep '^BIND_IP=' .env 2>/dev/null | cut -d= -f2)
+  echo "http://${ip:-?}:8090"
+}
+
+case "${1:-help}" in
+  status)
+    compose ps
+    echo
+    if curl -fsS "$(address)/api/health" >/dev/null 2>&1; then
+      echo "Running at $(address)"
+    else
+      echo "Not responding at $(address)"
+    fi
+    df -h "$(grep '^FILES_DIR=' .env | cut -d= -f2)" 2>/dev/null | tail -1 | awk '{print "Storage: " $3 " used, " $4 " free"}'
+    ;;
+  update)
+    echo "Updating HomeDrive..."
+    git -C "$DIR" pull --ff-only
+    sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive 2>/dev/null || true
+    compose up -d --build
+    echo "Updated. Running at $(address)"
+    ;;
+  restart) compose restart ;;
+  stop)    compose stop ;;
+  start)   compose up -d ;;
+  logs)    compose logs -f --tail 100 ;;
+  url)     address ;;
+  password)
+    read -rsp "New HomeDrive password: " pw < /dev/tty; echo
+    [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
+    case "$pw" in *"'"*) echo "Please don't use a ' (single quote) in the password."; exit 1 ;; esac
+    (umask 077
+     grep -v '^HOMEDRIVE_PASSWORD=' .env > .env.tmp
+     printf "HOMEDRIVE_PASSWORD='%s'\n" "$pw" >> .env.tmp
+     mv .env.tmp .env)
+    compose up -d
+    echo "Password changed. Sign in again in the app."
+    ;;
+  *)
+    cat <<EOF
+homedrive: manage your HomeDrive server
+
+  homedrive status     is it running, where, and how much space is left
+  homedrive update     download the latest version and restart
+  homedrive logs       follow the server log (Ctrl+C to stop)
+  homedrive restart    restart the server
+  homedrive stop       stop the server
+  homedrive start      start it again
+  homedrive url        print the address to use in the Mac app
+  homedrive password   change the login password
+EOF
+    ;;
+esac

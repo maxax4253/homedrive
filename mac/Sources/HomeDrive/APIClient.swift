@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct APIError: LocalizedError {
@@ -155,9 +156,13 @@ final class APIClient {
         _ = try await send(try jsonRequest("delete", body: ["path": path]))
     }
 
-    /// Uploads one local file into `folder`. The multipart body is written to a
-    /// temp file first so big files don't have to fit in memory.
-    func upload(file: URL, to folder: String, progress: @escaping ProgressHandler = { _, _ in }) async throws {
+    /// Uploads one local file into `folder` and confirms the server stored an
+    /// identical copy (same SHA-256 fingerprint). Throws if it doesn't match.
+    ///
+    /// The multipart body is written to a temp file first so big files don't have
+    /// to fit in memory; the fingerprint is computed in the same pass.
+    @discardableResult
+    func upload(file: URL, to folder: String, progress: @escaping ProgressHandler = { _, _ in }) async throws -> String {
         let boundary = "HomeDrive-\(UUID().uuidString)"
         let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: bodyURL) }
@@ -167,17 +172,31 @@ final class APIClient {
         let filename = file.lastPathComponent.replacingOccurrences(of: "\"", with: "'")
         out.write(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"files\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8))
 
+        var hasher = SHA256()
+        var localSize: Int64 = 0
         let input = try FileHandle(forReadingFrom: file)
         while let chunk = try input.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            localSize += Int64(chunk.count)
             out.write(chunk)
         }
         try input.close()
         out.write(Data("\r\n--\(boundary)--\r\n".utf8))
         try out.close()
+        let localHash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
 
         var req = makeRequest("upload", query: ["path": folder], method: "POST")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let (data, response) = try await TransferSession.shared.upload(req, fromFile: bodyURL, progress: progress)
         try check(data, response)
+
+        guard let saved = try? JSONDecoder().decode(UploadResult.self, from: data).saved.first,
+              let remoteHash = saved.sha256 else {
+            throw APIError(message: "The server didn't confirm the upload. Update the HomeDrive server.", status: 0)
+        }
+        guard remoteHash == localHash, saved.size == localSize else {
+            throw APIError(message: "Upload check failed: the copy on the server doesn't match. Nothing was deleted.", status: 0)
+        }
+        return remoteHash
     }
 }

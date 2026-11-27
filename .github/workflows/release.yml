@@ -1,0 +1,40 @@
+# Builds the Mac app and attaches it to a GitHub Release (free for public repos).
+# Make a release by pushing a tag:  git tag v0.4.0 && git push origin v0.4.0
+name: Release Mac app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build HomeDrive.app (Apple silicon + Intel)
+        run: OUT=dist UNIVERSAL=1 ./mac/build-app.sh
+
+      - name: Zip it
+        run: |
+          cd mac/dist
+          ditto -c -k --keepParent HomeDrive.app HomeDrive.zip
+          ls -lh HomeDrive.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mac/dist/HomeDrive.zip
+          generate_release_notes: true
+
+      - name: Keep the build (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeDrive
+          path: mac/dist/HomeDrive.zip

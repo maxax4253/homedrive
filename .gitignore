@@ -10,3 +10,4 @@ mac/build/
 mac/.swiftpm/
 *.xcodeproj/xcuserdata/
 .DS_Store
+mac/dist/

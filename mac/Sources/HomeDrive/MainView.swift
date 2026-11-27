@@ -193,13 +193,26 @@ struct StorageBox: View {
     var body: some View {
         if let s = model.storage, s.total > 0 {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Storage", systemImage: "internaldrive")
+                Label(s.isWholeDisk ? "Server storage" : "Your storage", systemImage: "internaldrive")
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.textPrimary)
-                UsageBar(fraction: Double(s.used) / Double(s.total))
-                Text("\(Format.size(s.used)) of \(Format.size(s.total)) used")
+                UsageBar(fraction: Double(s.used) / Double(s.total),
+                         highlight: s.isWholeDisk ? s.driveUsed.map { Double($0) / Double(s.total) } : nil)
+                Text(s.isWholeDisk
+                     ? "\(Format.size(s.used)) of \(Format.size(s.total)) used on the whole disk"
+                     : "\(Format.size(s.used)) of \(Format.size(s.total)) used")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if s.isWholeDisk, let mine = s.driveUsed {
+                    HStack(spacing: 6) {
+                        Circle().fill(Theme.accent).frame(width: 7, height: 7)
+                        Text("HomeDrive files: \(Format.size(mine))")
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
+                    .help("The rest of the disk is the server's system, apps and other files.")
+                }
                 if model.freedBytes > 0 {
                     Label("Freed \(Format.size(model.freedBytes)) on this Mac", systemImage: "leaf")
                         .font(.system(size: 12, weight: .medium))
@@ -213,14 +226,22 @@ struct StorageBox: View {
 
 struct UsageBar: View {
     let fraction: Double
+    /// Part of the used space to show in the accent color (your HomeDrive files);
+    /// the rest of `fraction` is drawn in grey. nil = all of it in the accent color.
+    var highlight: Double? = nil
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.divider)
+                if highlight != nil {
+                    Capsule()
+                        .fill(Theme.textSecondary.opacity(0.45))
+                        .frame(width: max(4, geo.size.width * min(1, fraction)))
+                }
                 Capsule()
                     .fill(Theme.accent)
-                    .frame(width: max(4, geo.size.width * min(1, fraction)))
+                    .frame(width: max(4, geo.size.width * min(1, highlight ?? fraction)))
             }
         }
         .frame(height: 4)

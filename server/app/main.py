@@ -205,12 +205,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "links_enabled": bool(settings.public_url),
             "backups_enabled": backups.enabled,
         }
+        # drive_used: how much your HomeDrive files take up (trash included).
+        drive_used = usage(s.user.username, s.space.home)
+        info["drive_used"] = drive_used
         if s.user.quota_bytes:
-            used = usage(s.user.username, s.space.home)
-            info.update(total=s.user.quota_bytes, used=used, free=max(0, s.user.quota_bytes - used))
+            # Your storage limit is the whole picture.
+            info.update(total=s.user.quota_bytes, used=drive_used,
+                        free=max(0, s.user.quota_bytes - drive_used), scope="quota")
         else:
+            # No limit: show the server's whole disk, which also holds the OS and other apps.
             disk = shutil.disk_usage(root)
-            info.update(total=disk.total, used=disk.used, free=disk.free)
+            info.update(total=disk.total, used=disk.used, free=disk.free, scope="disk")
         return info
 
     @app.post("/api/me/password")

@@ -86,9 +86,16 @@ struct MeResponse: Codable {
     let quota: Int64?
     let linksEnabled: Bool?
     let backupsEnabled: Bool?
+    /// Bytes your HomeDrive files take up (newer servers only).
+    let driveUsed: Int64?
+    /// "disk" = numbers are the server's whole disk; "quota" = your storage limit.
+    let scope: String?
+
+    var isWholeDisk: Bool { scope != "quota" && quota == nil }
 
     enum CodingKeys: String, CodingKey {
-        case username, total, used, free, quota
+        case username, total, used, free, quota, scope
+        case driveUsed = "drive_used"
         case isAdmin = "is_admin"
         case linksEnabled = "links_enabled"
         case backupsEnabled = "backups_enabled"

@@ -81,3 +81,11 @@ def test_restored_version_gets_a_new_modified_time(world):
     restored = admin.post("/api/versions/restore", json={"path": "n.txt", "version": v["id"]}).json()
     assert restored["modified"] >= first
     assert admin.get("/api/download", params={"path": "n.txt"}).content == b"one"
+
+
+def test_me_reports_homedrive_usage_separately(world):
+    admin = world["admin"]
+    admin.post("/api/upload", files=[("files", ("a.bin", b"x" * 5000))])
+    me = admin.get("/api/me").json()
+    assert me["scope"] == "disk" and me["drive_used"] >= 5000
+    assert me["used"] >= me["drive_used"]           # whole disk includes everything else

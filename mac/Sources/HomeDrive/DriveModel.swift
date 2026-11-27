@@ -160,7 +160,7 @@ final class DriveModel {
 
     init() {
         if let url = URL(string: serverURL), !serverURL.isEmpty,
-           let token = Keychain.load(account: serverURL) {
+           let token = TokenStore.load(account: serverURL) {
             api = APIClient(baseURL: url, token: token)
             isLoggedIn = true
             offline.configure(account: accountKey)
@@ -261,7 +261,7 @@ final class DriveModel {
         do {
             let result = try await client.login(username: username, password: password)
             client.token = result.token
-            Keychain.save(result.token, account: text)
+            TokenStore.save(result.token, account: text)
             UserDefaults.standard.set(text, forKey: "serverURL")
             UserDefaults.standard.set(username, forKey: "username")
             api = client
@@ -279,7 +279,7 @@ final class DriveModel {
     }
 
     func logout() {
-        Keychain.delete(account: serverURL)
+        TokenStore.delete(account: serverURL)
         api = nil
         isLoggedIn = false
         entries = []
@@ -309,7 +309,7 @@ final class DriveModel {
     /// After changing your own password the server hands back a new token.
     func replaceToken(_ token: String) {
         api?.token = token
-        Keychain.save(token, account: serverURL)
+        TokenStore.save(token, account: serverURL)
     }
 
     // MARK: - Loading

@@ -12,7 +12,9 @@ fi
 echo "Building (first build takes a minute)..."
 swift build -c release
 
-APP="build/HomeDrive.app"
+# Assemble in a temp folder so Spotlight/Launchpad never sees a second copy.
+STAGE=$(mktemp -d)
+APP="$STAGE/HomeDrive.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build -c release --show-bin-path)/HomeDrive" "$APP/Contents/MacOS/HomeDrive"
@@ -24,5 +26,6 @@ codesign --force --deep --sign - "$APP" >/dev/null
 DEST="/Applications/HomeDrive.app"
 rm -rf "$DEST"
 cp -R "$APP" "$DEST"
+rm -rf "$STAGE" build
 echo "Installed to $DEST"
 open "$DEST"

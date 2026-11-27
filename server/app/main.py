@@ -36,6 +36,10 @@ class PathBody(BaseModel):
     path: str
 
 
+class NameBody(BaseModel):
+    name: str
+
+
 class MoveBody(BaseModel):
     src: str
     dst: str
@@ -47,7 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     thumbs_dir = settings.data_dir / "thumbs"
     thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="HomeDrive", version="0.1.0")
+    app = FastAPI(title="HomeDrive", version="0.2.0")
 
     def require_user(request: Request) -> str:
         header = request.headers.get("authorization", "")
@@ -152,6 +156,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "Something with that name already exists")
         except storage.PathError as e:
             raise HTTPException(400, str(e))
+
+    @app.get("/api/recent")
+    def recent(limit: int = Query(50, ge=1, le=500), user: str = Depends(require_user)):
+        return {"entries": storage.recent(root, limit)}
+
+    @app.get("/api/search")
+    def search(q: str, limit: int = Query(200, ge=1, le=1000), user: str = Depends(require_user)):
+        return {"entries": storage.search(root, q, limit)}
+
+    @app.get("/api/trash")
+    def trash_list(user: str = Depends(require_user)):
+        return {"entries": storage.list_trash(root)}
+
+    @app.post("/api/trash/restore")
+    def trash_restore(body: NameBody, user: str = Depends(require_user)):
+        try:
+            return storage.entry(root, storage.restore(root, body.name))
+        except FileNotFoundError:
+            raise HTTPException(404, "Not in the trash")
+        except storage.PathError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/trash/delete")
+    def trash_delete(body: NameBody, user: str = Depends(require_user)):
+        try:
+            storage.delete_forever(root, body.name)
+        except FileNotFoundError:
+            raise HTTPException(404, "Not in the trash")
+        except storage.PathError as e:
+            raise HTTPException(400, str(e))
+        return Response(status_code=204)
+
+    @app.post("/api/trash/empty")
+    def trash_empty(user: str = Depends(require_user)):
+        return {"deleted": storage.empty_trash(root)}
 
     @app.post("/api/delete")
     def delete(body: PathBody, user: str = Depends(require_user)):

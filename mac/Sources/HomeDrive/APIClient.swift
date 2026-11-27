@@ -79,6 +79,30 @@ final class APIClient {
         try await decode(ListResponse.self, makeRequest("list", query: ["path": path])).entries
     }
 
+    func recent(limit: Int) async throws -> [Entry] {
+        try await decode(EntriesResponse.self, makeRequest("recent", query: ["limit": String(limit)])).entries
+    }
+
+    func search(_ query: String) async throws -> [Entry] {
+        try await decode(EntriesResponse.self, makeRequest("search", query: ["q": query])).entries
+    }
+
+    func trash() async throws -> [Entry] {
+        try await decode(EntriesResponse.self, makeRequest("trash")).entries
+    }
+
+    func restore(_ trashName: String) async throws {
+        _ = try await send(try jsonRequest("trash/restore", body: ["name": trashName]))
+    }
+
+    func deleteForever(_ trashName: String) async throws {
+        _ = try await send(try jsonRequest("trash/delete", body: ["name": trashName]))
+    }
+
+    func emptyTrash() async throws {
+        _ = try await send(makeRequest("trash/empty", method: "POST"))
+    }
+
     func thumbnail(_ path: String, size: Int) async throws -> Data {
         try await send(makeRequest("thumbnail", query: ["path": path, "size": String(size)]))
     }

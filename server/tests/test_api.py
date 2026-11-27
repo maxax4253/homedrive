@@ -82,6 +82,53 @@ def test_mkdir_move_delete(env):
     assert client.post("/api/delete", json={"path": ""}).status_code == 400
 
 
+def test_trash_restore_delete_empty(env):
+    client, files = env
+    client.post("/api/mkdir", json={"path": "Docs"})
+    client.post("/api/upload", params={"path": "Docs"}, files=[("files", ("a.txt", b"a"))])
+    client.post("/api/upload", files=[("files", ("b.txt", b"b"))])
+    client.post("/api/delete", json={"path": "Docs/a.txt"})
+    client.post("/api/delete", json={"path": "b.txt"})
+
+    items = client.get("/api/trash").json()["entries"]
+    assert {i["trash_name"] for i in items} == {"a.txt", "b.txt"}
+    assert {i["original"] for i in items} == {"Docs/a.txt", "b.txt"}
+
+    # Restore puts it back where it came from, even if the folder is gone.
+    client.post("/api/delete", json={"path": "Docs"})
+    r = client.post("/api/trash/restore", json={"name": "a.txt"})
+    assert r.status_code == 200 and r.json()["path"] == "Docs/a.txt"
+    assert (files / "Docs" / "a.txt").read_text() == "a"
+
+    assert client.post("/api/trash/delete", json={"name": "b.txt"}).status_code == 204
+    # "../x" is reduced to "x" inside the trash, so it can't escape.
+    assert client.post("/api/trash/delete", json={"name": "../x"}).status_code == 404
+    assert client.post("/api/trash/empty").json()["deleted"] == 1  # the Docs folder
+    assert client.get("/api/trash").json()["entries"] == []
+
+
+def test_recent_and_search(env):
+    client, files = env
+    import os
+    import time
+
+    (files / "Photos" / "2024").mkdir(parents=True)
+    old = files / "Photos" / "2024" / "beach.jpg"
+    old.write_text("x")
+    os.utime(old, (time.time() - 1000, time.time() - 1000))
+    (files / "notes.txt").write_text("x")
+    (files / ".trash").mkdir()
+    (files / ".trash" / "beach-old.jpg").write_text("x")
+
+    recent = [e["path"] for e in client.get("/api/recent").json()["entries"]]
+    assert recent == ["notes.txt", "Photos/2024/beach.jpg"]
+
+    found = [e["path"] for e in client.get("/api/search", params={"q": "BEACH"}).json()["entries"]]
+    assert found == ["Photos/2024/beach.jpg"]
+    found = [e["path"] for e in client.get("/api/search", params={"q": "20"}).json()["entries"]]
+    assert found == ["Photos/2024"]
+
+
 def test_thumbnail(env):
     client, files = env
     buf = io.BytesIO()

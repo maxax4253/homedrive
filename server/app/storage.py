@@ -1,8 +1,12 @@
 """File operations, all kept inside the files root."""
 
 import hashlib
+import heapq
+import json
 import mimetypes
+import os
 import shutil
+import time
 from pathlib import Path
 
 TRASH_NAME = ".trash"
@@ -93,19 +97,148 @@ def move(root: Path, src: str, dst: str) -> Path:
     return d
 
 
+INDEX_NAME = ".index.json"
+
+
+def _trash_dir(root: Path) -> Path:
+    d = root / TRASH_NAME
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _load_index(root: Path) -> dict:
+    f = _trash_dir(root) / INDEX_NAME
+    try:
+        return json.loads(f.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _save_index(root: Path, index: dict) -> None:
+    f = _trash_dir(root) / INDEX_NAME
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index))
+    tmp.replace(f)
+
+
+def _remove(p: Path) -> None:
+    shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
+
+
 def trash(root: Path, rel: str) -> None:
     p = resolve(root, rel)
     if p == root:
         raise PathError("Can't delete the drive root")
     if not p.exists():
         raise FileNotFoundError(rel)
-    trash_dir = root / TRASH_NAME
-    trash_dir.mkdir(exist_ok=True)
+    trash_dir = _trash_dir(root)
     if trash_dir == p or trash_dir in p.parents:
-        # Already in the trash: delete for real.
-        shutil.rmtree(p) if p.is_dir() else p.unlink()
-        return
-    shutil.move(str(p), str(unique_path(trash_dir / p.name)))
+        raise PathError("Use the Trash view to delete things for good")
+    dest = unique_path(trash_dir / p.name)
+    shutil.move(str(p), str(dest))
+    index = _load_index(root)
+    index[dest.name] = {"original": relpath(root, p), "deleted": time.time()}
+    _save_index(root, index)
+
+
+def list_trash(root: Path) -> list[dict]:
+    trash_dir = _trash_dir(root)
+    index = _load_index(root)
+    items = []
+    for child in trash_dir.iterdir():
+        if child.name in (INDEX_NAME, INDEX_NAME.replace(".json", ".tmp")):
+            continue
+        info = index.get(child.name, {})
+        e = entry(root, child)
+        e["trash_name"] = child.name
+        e["original"] = info.get("original", child.name)
+        e["deleted"] = info.get("deleted", child.stat().st_mtime)
+        items.append(e)
+    items.sort(key=lambda e: e["deleted"], reverse=True)
+    return items
+
+
+def _trashed(root: Path, name: str) -> Path:
+    name = safe_name(name)
+    p = _trash_dir(root) / name
+    if name == INDEX_NAME or not p.exists():
+        raise FileNotFoundError(name)
+    return p
+
+
+def restore(root: Path, name: str) -> Path:
+    p = _trashed(root, name)
+    index = _load_index(root)
+    original = index.get(p.name, {}).get("original", p.name)
+    try:
+        dest = resolve(root, original)
+    except PathError:
+        dest = root / p.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = unique_path(dest)
+    shutil.move(str(p), str(dest))
+    index.pop(p.name, None)
+    _save_index(root, index)
+    return dest
+
+
+def delete_forever(root: Path, name: str) -> None:
+    p = _trashed(root, name)
+    _remove(p)
+    index = _load_index(root)
+    index.pop(p.name, None)
+    _save_index(root, index)
+
+
+def empty_trash(root: Path) -> int:
+    trash_dir = _trash_dir(root)
+    count = 0
+    for child in trash_dir.iterdir():
+        if not child.name.startswith(".index"):
+            count += 1
+        _remove(child)
+    return count
+
+
+def walk(root: Path, include_dirs: bool = True):
+    """Every file (and folder) in the drive, skipping hidden things and the trash."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        here = Path(dirpath)
+        if include_dirs:
+            for d in dirnames:
+                yield here / d
+        for f in filenames:
+            if not f.startswith("."):
+                yield here / f
+
+
+def recent(root: Path, limit: int = 50) -> list[dict]:
+    files = []
+    for p in walk(root, include_dirs=False):
+        try:
+            files.append((p.stat().st_mtime, p))
+        except OSError:
+            continue
+    newest = heapq.nlargest(limit, files, key=lambda t: t[0])
+    return [entry(root, p) for _, p in newest]
+
+
+def search(root: Path, query: str, limit: int = 200) -> list[dict]:
+    q = query.strip().lower()
+    if not q:
+        return []
+    results = []
+    for p in walk(root):
+        if q in p.name.lower():
+            try:
+                results.append(entry(root, p))
+            except OSError:
+                continue
+            if len(results) >= limit:
+                break
+    results.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    return results
 
 
 def thumb_key(p: Path, size: int) -> str:

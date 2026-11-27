@@ -10,8 +10,10 @@ struct HomeDriveApp: App {
         WindowGroup("HomeDrive") {
             RootView()
                 .environment(model)
-                .frame(minWidth: 720, minHeight: 460)
+                .frame(minWidth: 900, minHeight: 560)
         }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1280, height: 800)
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Refresh") { Task { await model.refresh() } }
@@ -40,21 +42,22 @@ struct RootView: View {
     @Environment(DriveModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         Group {
             if model.isLoggedIn {
-                BrowserView()
+                MainView()
             } else {
                 LoginView()
+                    .background(Theme.window)
             }
         }
-        .alert("Something went wrong", isPresented: Binding(
-            get: { model.errorMessage != nil },
-            set: { if !$0 { model.errorMessage = nil } }
-        )) {
+        .alert("Something went wrong", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.errorMessage ?? "")
         }
+    }
+
+    private var errorBinding: Binding<Bool> {
+        Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
     }
 }

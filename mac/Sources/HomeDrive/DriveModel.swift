@@ -2,45 +2,83 @@ import AppKit
 import Foundation
 import Observation
 
-/// App state: login, current folder, and file actions.
+enum DriveSection: String, CaseIterable {
+    case home, drive, recent, trash
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .drive: return "My Drive"
+        case .recent: return "Recent"
+        case .trash: return "Trash"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: return "house"
+        case .drive: return "externaldrive"
+        case .recent: return "clock"
+        case .trash: return "trash"
+        }
+    }
+}
+
+/// App state: login, what's on screen, and file actions.
+///
+/// All UI state lives here instead of in SwiftUI @State, because @State needs a
+/// macro plugin that only ships with full Xcode, not the command line tools.
 @MainActor
 @Observable
 final class DriveModel {
+    static let shared = DriveModel()
+
     // Connection
     var serverURL: String = UserDefaults.standard.string(forKey: "serverURL") ?? ""
     var username: String = UserDefaults.standard.string(forKey: "username") ?? ""
+    var password = ""
     private(set) var isLoggedIn = false
     private var api: APIClient?
 
-    // Browsing
+    // What's on screen
+    private(set) var section: DriveSection = .home
     private(set) var path: String = ""
+    /// Items for the current screen (folder contents, recent files, trash, or search results).
     private(set) var entries: [Entry] = []
+    /// Home screen: top-level folders shown as cards.
+    private(set) var homeFolders: [Entry] = []
     private(set) var isLoading = false
-    private var backStack: [String] = []
-    private var forwardStack: [String] = []
-    var selection: Set<Entry.ID> = []
-    var searchText = ""
     private(set) var storage: MeResponse?
+    private var backStack: [(DriveSection, String)] = []
+    private var forwardStack: [(DriveSection, String)] = []
+
+    // Search
+    var searchText = ""
+    private(set) var activeSearch: String?
+
+    // Selection & hover
+    var selection: Set<Entry.ID> = []
+    var hoveredID: Entry.ID?
 
     // Status
     var errorMessage: String?
     private(set) var busyMessage: String?
     var previewURL: URL?
 
-    // UI state. Kept here instead of in @State because SwiftUI's @State needs a
-    // macro plugin that only ships with full Xcode, not the command line tools.
-    var password = ""
-    var showImporter = false
+    // Dialogs & popovers
+    var showNewMenu = false
     var showNewFolder = false
     var newFolderName = ""
     var renaming: Entry?
     var renameText = ""
     var deleting: [Entry] = []
+    var deletingForever: [Entry] = []
+    var confirmEmptyTrash = false
     var isDropTarget = false
+
+    // Thumbnails
     private(set) var thumbImages: [String: NSImage] = [:]
     private var thumbsLoading: Set<String> = []
-
-    static let shared = DriveModel()
 
     init() {
         if let url = URL(string: serverURL), !serverURL.isEmpty,
@@ -50,25 +88,24 @@ final class DriveModel {
         }
     }
 
-    var visibleEntries: [Entry] {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return entries }
-        return entries.filter { $0.name.localizedCaseInsensitiveContains(q) }
-    }
+    // MARK: - Derived
 
+    var folders: [Entry] { entries.filter(\.isDir) }
+    var files: [Entry] { entries.filter { !$0.isDir } }
     var selectedEntries: [Entry] { entries.filter { selection.contains($0.id) } }
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
-    var canGoUp: Bool { !path.isEmpty }
-    var folderName: String { path.isEmpty ? "Drive" : (path as NSString).lastPathComponent }
+    var canUpload: Bool { activeSearch == nil && (section == .drive || section == .home) }
+    /// Where uploads and new folders go.
+    var uploadTarget: String { section == .drive ? path : "" }
 
-    /// Breadcrumb parts: [("Drive", ""), ("Photos", "Photos"), ("2024", "Photos/2024")]
-    var breadcrumbs: [(name: String, path: String)] {
-        var result: [(String, String)] = [("Drive", "")]
+    /// Breadcrumb parts for My Drive: [("My Drive", ""), ("Photos", "Photos"), ...]
+    var breadcrumbs: [Crumb] {
+        var result = [Crumb(name: "My Drive", path: "")]
         var current = ""
         for part in path.split(separator: "/") {
             current = current.isEmpty ? String(part) : "\(current)/\(part)"
-            result.append((String(part), current))
+            result.append(Crumb(name: String(part), path: current))
         }
         return result
     }
@@ -76,7 +113,6 @@ final class DriveModel {
     // MARK: - Login
 
     func login() async {
-        let password = self.password
         var text = serverURL.trimmingCharacters(in: .whitespaces)
         if !text.hasPrefix("http://") && !text.hasPrefix("https://") { text = "http://" + text }
         while text.hasSuffix("/") { text.removeLast() }
@@ -95,8 +131,9 @@ final class DriveModel {
             UserDefaults.standard.set(text, forKey: "serverURL")
             UserDefaults.standard.set(username, forKey: "username")
             api = client
+            password = ""
             isLoggedIn = true
-            self.password = ""
+            section = .home
             path = ""
             await refresh()
         } catch {
@@ -109,27 +146,45 @@ final class DriveModel {
         api = nil
         isLoggedIn = false
         entries = []
+        homeFolders = []
         path = ""
+        section = .home
         backStack = []
         forwardStack = []
         storage = nil
         thumbImages = [:]
+        activeSearch = nil
+        searchText = ""
     }
 
-    // MARK: - Navigation
+    // MARK: - Loading
 
     func refresh() async {
         guard let api else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            entries = try await api.list(path)
+            if let query = activeSearch {
+                entries = try await api.search(query)
+            } else {
+                switch section {
+                case .home:
+                    homeFolders = try await api.list("").filter(\.isDir)
+                    entries = try await api.recent(limit: 30)
+                case .drive:
+                    entries = try await api.list(path)
+                case .recent:
+                    entries = try await api.recent(limit: 200)
+                case .trash:
+                    entries = try await api.trash()
+                }
+            }
             selection = selection.filter { id in entries.contains { $0.id == id } }
             storage = try? await api.me()
         } catch let error as APIError where error.status == 401 {
             logout()
             errorMessage = "Your login expired. Please sign in again."
-        } catch let error as APIError where error.status == 404 && !path.isEmpty {
+        } catch let error as APIError where error.status == 404 && section == .drive && !path.isEmpty {
             path = ""
             await refresh()
         } catch {
@@ -137,43 +192,81 @@ final class DriveModel {
         }
     }
 
-    func go(to newPath: String) async {
-        guard newPath != path else { return }
-        backStack.append(path)
-        forwardStack.removeAll()
+    // MARK: - Navigation
+
+    private func navigate(_ newSection: DriveSection, _ newPath: String = "") async {
+        let sameSpot = newSection == section && newPath == path && activeSearch == nil
+        if !sameSpot {
+            backStack.append((section, path))
+            forwardStack.removeAll()
+        }
+        section = newSection
         path = newPath
-        selection = []
+        activeSearch = nil
         searchText = ""
+        selection = []
         await refresh()
     }
 
+    func show(_ newSection: DriveSection) async {
+        await navigate(newSection, "")
+    }
+
+    func go(to folder: String) async {
+        await navigate(.drive, folder)
+    }
+
     func goBack() async {
-        guard let previous = backStack.popLast() else { return }
-        forwardStack.append(path)
-        path = previous
+        guard let last = backStack.popLast() else { return }
+        forwardStack.append((section, path))
+        section = last.0
+        path = last.1
+        activeSearch = nil
         selection = []
         await refresh()
     }
 
     func goForward() async {
         guard let next = forwardStack.popLast() else { return }
-        backStack.append(path)
-        path = next
+        backStack.append((section, path))
+        section = next.0
+        path = next.1
+        activeSearch = nil
         selection = []
         await refresh()
     }
 
-    func goUp() async {
-        guard canGoUp else { return }
-        await go(to: (path as NSString).deletingLastPathComponent)
+    func search() async {
+        let q = searchText.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else {
+            await clearSearch()
+            return
+        }
+        activeSearch = q
+        selection = []
+        await refresh()
+    }
+
+    func clearSearch() async {
+        searchText = ""
+        guard activeSearch != nil else { return }
+        activeSearch = nil
+        await refresh()
     }
 
     func open(_ entry: Entry) async {
+        if section == .trash && activeSearch == nil { return }
         if entry.isDir {
             await go(to: entry.path)
         } else {
             await preview(entry)
         }
+    }
+
+    /// Jump to the folder a file lives in (from Recent/Search).
+    func showLocation(of entry: Entry) async {
+        await go(to: entry.parentPath)
+        selection = [entry.id]
     }
 
     // MARK: - Files
@@ -210,8 +303,9 @@ final class DriveModel {
         guard let api else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         var saved: [URL] = []
-        for (i, entry) in items.enumerated() where !entry.isDir {
-            busyMessage = items.count > 1 ? "Downloading \(i + 1) of \(items.count)…" : "Downloading \(entry.name)…"
+        let fileItems = items.filter { !$0.isDir }
+        for (i, entry) in fileItems.enumerated() {
+            busyMessage = fileItems.count > 1 ? "Downloading \(i + 1) of \(fileItems.count)…" : "Downloading \(entry.name)…"
             let dest = uniqueURL(downloads.appendingPathComponent(entry.name))
             do {
                 try await api.download(entry.path, to: dest)
@@ -228,10 +322,42 @@ final class DriveModel {
         if !saved.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(saved) }
     }
 
-    /// Uploads files and folders from the Mac into the current folder.
+    func pickFilesToUpload() {
+        showNewMenu = false
+        let panel = NSOpenPanel()
+        panel.title = "Upload files"
+        panel.prompt = "Upload"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        Task { await upload(urls) }
+    }
+
+    func pickFolderToUpload() {
+        showNewMenu = false
+        let panel = NSOpenPanel()
+        panel.title = "Upload folder"
+        panel.prompt = "Upload"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        Task { await upload(urls) }
+    }
+
+    func startNewFolder() {
+        showNewMenu = false
+        newFolderName = "Untitled folder"
+        showNewFolder = true
+    }
+
+    /// Uploads files and folders from the Mac.
     func upload(_ urls: [URL]) async {
         guard let api else { return }
-        let target = path
+        let target = uploadTarget
         var files: [(URL, String)] = []
         var folders: [String] = []
         for url in urls { collect(url, into: target, files: &files, folders: &folders) }
@@ -269,7 +395,7 @@ final class DriveModel {
     func newFolder(named name: String) async {
         guard let api, let name = cleanName(name) else { return }
         do {
-            try await api.mkdir(join(path, name))
+            try await api.mkdir(join(uploadTarget, name))
             await refresh()
         } catch {
             errorMessage = friendly(error)
@@ -278,9 +404,8 @@ final class DriveModel {
 
     func rename(_ entry: Entry, to name: String) async {
         guard let api, let name = cleanName(name), name != entry.name else { return }
-        let parent = (entry.path as NSString).deletingLastPathComponent
         do {
-            try await api.move(from: entry.path, to: join(parent, name))
+            try await api.move(from: entry.path, to: join(entry.parentPath, name))
             await refresh()
         } catch {
             errorMessage = friendly(error)
@@ -301,6 +426,51 @@ final class DriveModel {
         await refresh()
     }
 
+    // MARK: - Trash
+
+    func restore(_ items: [Entry]) async {
+        guard let api else { return }
+        for entry in items {
+            guard let name = entry.trashName else { continue }
+            do {
+                try await api.restore(name)
+            } catch {
+                errorMessage = friendly(error)
+                break
+            }
+        }
+        selection = []
+        await refresh()
+    }
+
+    func deleteForever(_ items: [Entry]) async {
+        guard let api else { return }
+        for entry in items {
+            guard let name = entry.trashName else { continue }
+            do {
+                try await api.deleteForever(name)
+            } catch {
+                errorMessage = friendly(error)
+                break
+            }
+        }
+        selection = []
+        await refresh()
+    }
+
+    func emptyTrash() async {
+        guard let api else { return }
+        do {
+            try await api.emptyTrash()
+        } catch {
+            errorMessage = friendly(error)
+        }
+        selection = []
+        await refresh()
+    }
+
+    // MARK: - Thumbnails
+
     func thumbnail(for entry: Entry) -> NSImage? {
         thumbImages[entry.thumbKey]
     }
@@ -310,7 +480,7 @@ final class DriveModel {
         guard let api, entry.hasThumbnail, thumbImages[key] == nil, !thumbsLoading.contains(key) else { return }
         thumbsLoading.insert(key)
         defer { thumbsLoading.remove(key) }
-        guard let data = try? await api.thumbnail(entry.path, size: 256),
+        guard let data = try? await api.thumbnail(entry.path, size: 384),
               let image = NSImage(data: data) else { return }
         if thumbImages.count > 1500 { thumbImages.removeAll() }
         thumbImages[key] = image
@@ -359,4 +529,9 @@ final class DriveModel {
         }
         return error.localizedDescription
     }
+}
+
+struct Crumb: Hashable {
+    let name: String
+    let path: String
 }

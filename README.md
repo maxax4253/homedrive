@@ -37,15 +37,20 @@ This builds `HomeDrive.app`, copies it to `/Applications`, and opens it. Sign in
 
 To work on the code, open `mac/Package.swift` in Xcode and press Run.
 
-## What it does (v0.1)
+## What it does (v0.2)
 
-- Browse folders as an icon grid with photo thumbnails (including iPhone HEIC) or as a sortable list
-- Back/forward/up, breadcrumbs, search within a folder
-- Upload by dragging files or folders onto the window, or with the Upload button (⌘U)
-- Download to ~/Downloads
-- Quick Look previews: double-click or press Space (images, PDFs, video, docs)
-- New folder, rename, move to trash (the trash is the `.trash` folder on the server)
-- Login token stored in the macOS Keychain
+Google Drive-style layout:
+
+- Sidebar with a **+ New** button (New folder, File upload, Folder upload), plus Home, My Drive, Recent and Trash, with storage use at the bottom
+- **Home** shows suggested folders as cards and your recent files
+- **My Drive** has clickable breadcrumbs and a list/grid toggle. The list has Name / Last modified / File size columns; the grid has folder cards and file cards with photo thumbnails (including iPhone HEIC)
+- **Search in Drive** searches the whole drive, not just the current folder
+- **Trash** with Restore, Delete forever and Empty trash; restored items go back to where they were
+- Drag files or folders onto the window to upload; downloads go to ~/Downloads
+- Previews with Quick Look: double-click a file or press Space
+- Right-click or ⋮ for Preview, Show file location, Download, Rename, Move to trash
+- Shortcuts: ⌘U uploads files, ⇧⌘U uploads a folder, ⇧⌘N makes a new folder, ⌘[ / ⌘] go back/forward, ⌘R refreshes
+- The login token is stored in the macOS Keychain
 
 ## API
 
@@ -60,7 +65,13 @@ To work on the code, open `mac/Package.swift` in Xcode and press Run.
 | POST | `/api/upload?path=` | multipart, field `files` |
 | POST | `/api/mkdir` | `{path}` |
 | POST | `/api/move` | `{src, dst}` (also used for rename) |
-| POST | `/api/delete` | `{path}` → moves to `.trash` |
+| POST | `/api/delete` | `{path}` → moves to the trash |
+| GET | `/api/recent?limit=` | newest files across the drive |
+| GET | `/api/search?q=` | name search across the drive |
+| GET | `/api/trash` | trashed items with their original location |
+| POST | `/api/trash/restore` | `{name}` |
+| POST | `/api/trash/delete` | `{name}` → gone for good |
+| POST | `/api/trash/empty` | |
 
 All endpoints except health and login need `Authorization: Bearer <token>`.
 

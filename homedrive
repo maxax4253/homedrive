@@ -2,7 +2,14 @@
 # Manage the HomeDrive server.  Usage: homedrive <command>
 set -euo pipefail
 
-DIR="${HOMEDRIVE_DIR:-$HOME/homedrive}"
+# Where HomeDrive lives. Under sudo, $HOME is root's, so use the real user's home.
+if [ -n "${HOMEDRIVE_DIR:-}" ]; then
+  DIR="$HOMEDRIVE_DIR"
+elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  DIR="$(getent passwd "$SUDO_USER" | cut -d: -f6)/homedrive"
+else
+  DIR="$HOME/homedrive"
+fi
 SERVER="$DIR/server"
 [ -d "$SERVER" ] || { echo "HomeDrive isn't installed in $DIR (set HOMEDRIVE_DIR if you moved it)."; exit 1; }
 cd "$SERVER"

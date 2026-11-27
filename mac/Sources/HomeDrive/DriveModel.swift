@@ -3,11 +3,10 @@ import Foundation
 import Observation
 
 enum DriveSection: String, CaseIterable {
-    case home, drive, recent, trash
+    case drive, recent, trash
 
     var title: String {
         switch self {
-        case .home: return "Home"
         case .drive: return "My Drive"
         case .recent: return "Recent"
         case .trash: return "Trash"
@@ -16,7 +15,6 @@ enum DriveSection: String, CaseIterable {
 
     var icon: String {
         switch self {
-        case .home: return "house"
         case .drive: return "externaldrive"
         case .recent: return "clock"
         case .trash: return "trash"
@@ -41,12 +39,10 @@ final class DriveModel {
     private var api: APIClient?
 
     // What's on screen
-    private(set) var section: DriveSection = .home
+    private(set) var section: DriveSection = .drive
     private(set) var path: String = ""
     /// Items for the current screen (folder contents, recent files, trash, or search results).
     private(set) var entries: [Entry] = []
-    /// Home screen: top-level folders shown as cards.
-    private(set) var homeFolders: [Entry] = []
     private(set) var isLoading = false
     private(set) var storage: MeResponse?
     private var backStack: [(DriveSection, String)] = []
@@ -95,7 +91,7 @@ final class DriveModel {
     var selectedEntries: [Entry] { entries.filter { selection.contains($0.id) } }
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
-    var canUpload: Bool { activeSearch == nil && (section == .drive || section == .home) }
+    var canUpload: Bool { activeSearch == nil && section == .drive }
     /// Where uploads and new folders go.
     var uploadTarget: String { section == .drive ? path : "" }
 
@@ -133,7 +129,7 @@ final class DriveModel {
             api = client
             password = ""
             isLoggedIn = true
-            section = .home
+            section = .drive
             path = ""
             await refresh()
         } catch {
@@ -146,9 +142,8 @@ final class DriveModel {
         api = nil
         isLoggedIn = false
         entries = []
-        homeFolders = []
         path = ""
-        section = .home
+        section = .drive
         backStack = []
         forwardStack = []
         storage = nil
@@ -168,9 +163,6 @@ final class DriveModel {
                 entries = try await api.search(query)
             } else {
                 switch section {
-                case .home:
-                    homeFolders = try await api.list("").filter(\.isDir)
-                    entries = try await api.recent(limit: 30)
                 case .drive:
                     entries = try await api.list(path)
                 case .recent:

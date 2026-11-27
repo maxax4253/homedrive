@@ -12,7 +12,6 @@ struct ScreenSwitcher: View {
             SearchScreen()
         } else {
             switch model.section {
-            case .home: HomeScreen()
             case .drive: DriveScreen()
             case .recent: RecentScreen()
             case .trash: TrashScreen()
@@ -22,44 +21,6 @@ struct ScreenSwitcher: View {
 }
 
 // MARK: - Screens
-
-struct HomeScreen: View {
-    @Environment(DriveModel.self) private var model
-    @AppStorage("viewMode") private var viewMode: ViewMode = .list
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Welcome to HomeDrive")
-                    .font(.system(size: 26, weight: .regular))
-                    .foregroundStyle(Theme.textPrimary)
-                    .padding(.bottom, 26)
-
-                if !model.homeFolders.isEmpty {
-                    SubHeader(title: "Suggested folders")
-                    FolderGrid(folders: Array(model.homeFolders.prefix(8)))
-                        .padding(.bottom, 28)
-                }
-
-                HStack {
-                    SubHeader(title: "Recent files")
-                    Spacer()
-                    ViewToggle(mode: $viewMode)
-                }
-                .padding(.bottom, 6)
-
-                if model.entries.isEmpty && !model.isLoading {
-                    EmptyState(icon: "clock", title: "No files yet", message: "Click New to upload something, or drag files here.")
-                } else if viewMode == .list {
-                    FileTable(entries: model.entries, columns: [.modified, .location])
-                } else {
-                    FileGrid(files: model.entries)
-                }
-            }
-            .padding(28)
-        }
-    }
-}
 
 struct DriveScreen: View {
     @Environment(DriveModel.self) private var model

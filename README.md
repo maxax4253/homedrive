@@ -41,8 +41,7 @@ To work on the code, open `mac/Package.swift` in Xcode and press Run.
 
 Google Drive-style layout:
 
-- Sidebar with a **+ New** button (New folder, File upload, Folder upload), plus Home, My Drive, Recent and Trash, with storage use at the bottom
-- **Home** shows suggested folders as cards and your recent files
+- Sidebar with a **+ New** button (New folder, File upload, Folder upload), plus My Drive, Recent and Trash, with storage use at the bottom
 - **My Drive** has clickable breadcrumbs and a list/grid toggle. The list has Name / Last modified / File size columns; the grid has folder cards and file cards with photo thumbnails (including iPhone HEIC)
 - **Search in Drive** searches the whole drive, not just the current folder
 - **Trash** with Restore, Delete forever and Empty trash; restored items go back to where they were

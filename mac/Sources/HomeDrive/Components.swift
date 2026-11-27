@@ -149,9 +149,8 @@ struct RowMenu: View {
         Menu {
             ItemMenu(items: [entry])
         } label: {
-            Image(systemName: "ellipsis")
-                .rotationEffect(.degrees(90))
-                .font(.system(size: 15, weight: .semibold))
+            Text("⋮")
+                .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(Theme.textSecondary)
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())

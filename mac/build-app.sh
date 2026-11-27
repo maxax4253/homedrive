@@ -19,6 +19,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build -c release --show-bin-path)/HomeDrive" "$APP/Contents/MacOS/HomeDrive"
 cp Info.plist "$APP/Contents/Info.plist"
+iconutil -c icns AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign so macOS is happy running it locally.
 codesign --force --deep --sign - "$APP" >/dev/null
@@ -27,5 +28,6 @@ DEST="/Applications/HomeDrive.app"
 rm -rf "$DEST"
 cp -R "$APP" "$DEST"
 rm -rf "$STAGE" build
+touch "$DEST"   # nudge Finder/Dock to pick up the new icon
 echo "Installed to $DEST"
 open "$DEST"

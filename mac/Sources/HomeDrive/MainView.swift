@@ -32,7 +32,7 @@ struct SideNav: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Logo()
-                .padding(.top, 44)
+                .padding(.top, 30)
                 .padding(.leading, 22)
                 .padding(.bottom, 18)
             NewButton()
@@ -84,7 +84,8 @@ struct NewButton: View {
             .padding(.trailing, 22)
             .frame(height: 56)
             .background(Theme.newButton, in: RoundedRectangle(cornerRadius: 16))
-            .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+            .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
@@ -227,7 +228,7 @@ struct TopBar: View {
             }
             AccountMenu()
         }
-        .padding(.top, 34)
+        .padding(.top, 22)
         .padding(.bottom, 10)
         .padding(.leading, 4)
     }
@@ -274,13 +275,21 @@ struct AccountMenu: View {
             Button("Refresh") { Task { await model.refresh() } }
             Button("Sign Out") { model.logout() }
         } label: {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 26))
-                .foregroundStyle(Theme.accent)
+            Text(initial)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color.white)
+                .frame(width: 34, height: 34)
+                .background(Color(red: 0.36, green: 0.46, blue: 0.83), in: Circle())
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+        .help("Account")
+    }
+
+    private var initial: String {
+        String(model.username.prefix(1)).uppercased()
     }
 }
 

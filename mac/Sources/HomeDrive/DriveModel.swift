@@ -387,7 +387,25 @@ final class DriveModel {
     @discardableResult
     private func addTransfer(_ transfer: Transfer) -> UUID {
         transfers.append(transfer)
+        autoCloseToken = UUID()   // new work cancels any pending auto-close
         return transfer.id
+    }
+
+    private var autoCloseToken = UUID()
+
+    /// Once everything has finished without errors, close the popup after 5 seconds.
+    /// If anything failed it stays open so you can see what went wrong.
+    private func scheduleAutoClose() {
+        guard activeTransferCount == 0, !transfers.isEmpty else { return }
+        let anyFailed = transfers.contains { if case .failed = $0.state { return true } else { return false } }
+        guard !anyFailed else { return }
+        let token = UUID()
+        autoCloseToken = token
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard self.autoCloseToken == token, self.activeTransferCount == 0 else { return }
+            self.clearTransfers()
+        }
     }
 
     private func updateTransfer(_ id: UUID, _ change: (inout Transfer) -> Void) {
@@ -414,6 +432,7 @@ final class DriveModel {
                 t.localURL = url
                 if t.bytesTotal > 0 { t.bytesDone = t.bytesTotal }
             }
+            scheduleAutoClose()
             return true
         } catch {
             let message = friendly(error)
@@ -496,6 +515,7 @@ final class DriveModel {
         let freed = trashed.reduce(Int64(0)) { $0 + (sizes[$1] ?? 0) }
         addFreedBytes(freed)
         markOffloaded(trashed)
+        scheduleAutoClose()
 
         let failed = urls.count - verified.count
         if failed > 0 {

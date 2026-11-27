@@ -112,10 +112,10 @@ extension DriveModel {
         // Safety net: if lots of files vanished locally at once (an accident, or a
         // drive hiccup), don't delete them on the server. Bring them back instead.
         let localDeletions = allPaths.filter { p in
-            guard let r = remote[p], local[p] == nil, let b = offline.baseline(p) else { return false }
-            return same(r.modified, b.serverModified) && r.size == b.serverSize
+            SyncRules.isLocalDeletion(remote: remote[p].map { Self.state($0) }, local: local[p].map { Self.state($0) },
+                                      baseline: offline.baseline(p))
         }
-        let tooManyDeletions = localDeletions.count > max(10, known.count * 3 / 10)
+        let tooManyDeletions = SyncRules.tooManyDeletions(localDeletions.count, knownFiles: known.count)
         if tooManyDeletions {
             result.notes.append("\(localDeletions.count) files disappeared from “\(root.name)” in your HomeDrive Offline folder at once. To be safe they weren't deleted from HomeDrive. They'll download again.")
         }
@@ -124,69 +124,47 @@ extension DriveModel {
             guard offline.isPinnedRoot(root.path) else { break }   // un-pinned mid-sync
             let r = remote[path]
             let l = local[path]
-            let b = offline.baseline(path)
-
-            // Still being written by an app: come back in a few seconds.
-            if let l, now - l.modified < 2 {
+            let action = SyncRules.decide(remote: r.map { Self.state($0) }, local: l.map { Self.state($0) },
+                                          baseline: offline.baseline(path), now: now, safetyNet: tooManyDeletions)
+            switch action {
+            case .nothing:
+                break
+            case .waitStillWriting:
                 result.needsAnotherPass = true
-                continue
-            }
-
-            switch (r, l, b) {
-            case let (r?, l?, b?):
-                let serverChanged = !same(r.modified, b.serverModified) || r.size != b.serverSize
-                let localChanged = !same(l.modified, b.localModified) || l.size != b.localSize
-                if serverChanged && localChanged {
-                    try await keepBoth(path: path, local: l, remote: r, api: api, reason: "Changed in both places, so both copies were kept")
-                    result.serverChanged = true
-                } else if localChanged {
+            case .download:
+                if let r { try await download(r, api: api) }
+            case .uploadEdit:
+                if let r, let l, let b = offline.baseline(path) {
                     try await uploadEdit(path: path, local: l, base: b, remote: r, api: api)
                     result.serverChanged = true
-                } else if serverChanged {
-                    try await download(r, api: api)
                 }
-
-            case let (r?, l?, nil):
-                // Both exist but we never synced them (first sync): same file?
-                if l.size == r.size, try await sameContents(local: l, remotePath: path, api: api) {
+            case .uploadNew(let note):
+                if let l {
+                    try await uploadNew(path: path, local: l, api: api, note: note)
+                    result.serverChanged = true
+                }
+            case .keepBoth(let reason):
+                if let r, let l {
+                    try await keepBoth(path: path, local: l, remote: r, api: api, reason: reason)
+                    result.serverChanged = true
+                }
+            case .compareContents:
+                guard let r, let l else { break }
+                if try await sameContents(local: l, remotePath: path, api: api) {
                     offline.setBaseline(path, .init(serverModified: r.modified, serverSize: r.size,
                                                     localModified: l.modified, localSize: l.size))
                 } else {
-                    try await keepBoth(path: path, local: l, remote: r, api: api, reason: "Different copies on your Mac and HomeDrive, so both were kept")
+                    try await keepBoth(path: path, local: l, remote: r, api: api, reason: SyncRules.differentCopies)
                     result.serverChanged = true
                 }
-
-            case let (r?, nil, b?):
-                let serverChanged = !same(r.modified, b.serverModified) || r.size != b.serverSize
-                if serverChanged || tooManyDeletions {
-                    try await download(r, api: api)          // changed on server, or safety net: bring it back
-                } else {
-                    try await deleteOnServer(path, api: api)  // you deleted it locally
-                    result.serverChanged = true
-                }
-
-            case let (r?, nil, nil):
-                try await download(r, api: api)               // new on the server
-
-            case let (nil, l?, b?):
-                let localChanged = !same(l.modified, b.localModified) || l.size != b.localSize
-                if localChanged {
-                    try await uploadNew(path: path, local: l, api: api, note: "Deleted on HomeDrive but you edited it, so it was uploaded again")
-                    result.serverChanged = true
-                } else {
-                    try? FileManager.default.removeItem(at: l.url)   // deleted on the server
-                    offline.setBaseline(path, nil)
-                }
-
-            case let (nil, l?, nil):
-                try await uploadNew(path: path, local: l, api: api, note: "Added from your HomeDrive Offline folder")
+            case .deleteOnServer:
+                try await deleteOnServer(path, api: api)
                 result.serverChanged = true
-
-            case (nil, nil, _?):
-                offline.setBaseline(path, nil)                 // gone everywhere
-
-            case (nil, nil, nil):
-                break
+            case .removeLocal:
+                if let l { try? FileManager.default.removeItem(at: l.url) }
+                offline.setBaseline(path, nil)
+            case .forgetBaseline:
+                offline.setBaseline(path, nil)
             }
         }
         return result
@@ -194,7 +172,8 @@ extension DriveModel {
 
     // MARK: - Steps
 
-    private func same(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1 }
+    private static func state(_ e: Entry) -> SyncRules.FileState { .init(modified: e.modified, size: e.size) }
+    private static func state(_ f: OfflineStore.LocalFile) -> SyncRules.FileState { .init(modified: f.modified, size: f.size) }
 
     private func download(_ entry: Entry, api: APIClient) async throws {
         let url = offline.localURL(for: entry.path)

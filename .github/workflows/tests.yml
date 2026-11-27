@@ -1,9 +1,9 @@
-# Runs the server tests and lints the shell scripts on every push.
+# Runs the server tests, builds and tests the Mac app, and lints the shell scripts
+# on every push, so a broken change is caught before it becomes a release.
 name: Tests
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -18,6 +18,15 @@ jobs:
         run: pip install -r server/requirements.txt pytest httpx
       - name: Test
         run: cd server && python -m pytest -q
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cd mac && swift build
+      - name: Test
+        run: cd mac && swift test
 
   scripts:
     runs-on: ubuntu-latest

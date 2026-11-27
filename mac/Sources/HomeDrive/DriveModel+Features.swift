@@ -289,6 +289,7 @@ extension DriveModel {
         } catch {
             let message = friendly(error)
             updateTransfer(id) { $0.state = .failed(message) }
+            signOutIfExpired(error)
         }
         await refresh()
     }

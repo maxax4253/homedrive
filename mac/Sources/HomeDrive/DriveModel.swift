@@ -285,6 +285,14 @@ final class DriveModel {
         editing.stopAll()
     }
 
+    /// A 401 means the saved login no longer works (expired, password reset, or a
+    /// server update). Send the user back to the sign-in screen instead of failing quietly.
+    func signOutIfExpired(_ error: Error) {
+        guard let api = error as? APIError, api.status == 401, isLoggedIn else { return }
+        logout()
+        errorMessage = "Your login expired. Please sign in again; nothing was deleted from your Mac."
+    }
+
     /// After changing your own password the server hands back a new token.
     func replaceToken(_ token: String) {
         api?.token = token
@@ -531,6 +539,7 @@ final class DriveModel {
         } catch {
             let message = friendly(error)
             updateTransfer(id) { $0.state = .failed(message) }
+            signOutIfExpired(error)
             return false
         }
     }

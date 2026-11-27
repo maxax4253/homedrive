@@ -14,7 +14,8 @@ def env(tmp_path):
     data = tmp_path / "data"
     files.mkdir()
     data.mkdir()
-    settings = Settings(files_root=files, data_dir=data, username="max", password="pw", secret="s3cret")
+    settings = Settings(files_root=files, data_dir=data, username="max", password="pw", secret="s3cret",
+                        run_scheduler=False)
     client = TestClient(create_app(settings))
     token = client.post("/api/login", json={"username": "max", "password": "pw"}).json()["token"]
     client.headers["Authorization"] = f"Bearer {token}"
@@ -37,7 +38,7 @@ def test_upload_list_download(env):
     client, files = env
     r = client.post("/api/upload", files=[("files", ("hello.txt", b"hi there"))])
     assert r.status_code == 200
-    names = [e["name"] for e in client.get("/api/list").json()["entries"]]
+    names = [e["name"] for e in client.get("/api/list").json()["entries"] if not e["is_dir"]]
     assert names == ["hello.txt"]
     assert client.get("/api/download", params={"path": "hello.txt"}).content == b"hi there"
 
@@ -46,7 +47,7 @@ def test_upload_name_conflict(env):
     client, files = env
     client.post("/api/upload", files=[("files", ("a.txt", b"1"))])
     client.post("/api/upload", files=[("files", ("a.txt", b"2"))])
-    names = sorted(e["name"] for e in client.get("/api/list").json()["entries"])
+    names = sorted(e["name"] for e in client.get("/api/list").json()["entries"] if not e["is_dir"])
     assert names == ["a (1).txt", "a.txt"]
 
 
@@ -56,7 +57,7 @@ def test_folders_sorted_first_and_hidden_skipped(env):
     (files / "Aaa").mkdir()
     (files / ".secret").write_text("x")
     names = [e["name"] for e in client.get("/api/list").json()["entries"]]
-    assert names == ["Aaa", "zz.txt"]
+    assert names == ["Aaa", "Shared", "zz.txt"]
 
 
 def test_path_traversal_blocked(env):

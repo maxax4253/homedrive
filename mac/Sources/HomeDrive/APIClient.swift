@@ -26,7 +26,7 @@ final class APIClient {
 
     // MARK: - Requests
 
-    private func makeRequest(_ endpoint: String, query: [String: String] = [:], method: String = "GET") -> URLRequest {
+    func makeRequest(_ endpoint: String, query: [String: String] = [:], method: String = "GET") -> URLRequest {
         var comps = URLComponents(url: baseURL.appendingPathComponent("api/\(endpoint)"), resolvingAgainstBaseURL: false)!
         if !query.isEmpty {
             comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -37,14 +37,14 @@ final class APIClient {
         return req
     }
 
-    private func jsonRequest<T: Encodable>(_ endpoint: String, body: T) throws -> URLRequest {
+    func jsonRequest<T: Encodable>(_ endpoint: String, body: T) throws -> URLRequest {
         var req = makeRequest(endpoint, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(body)
         return req
     }
 
-    private func check(_ data: Data, _ response: URLResponse) throws {
+    func check(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             let detail = (try? JSONDecoder().decode(ServerError.self, from: data))?.detail
@@ -52,13 +52,13 @@ final class APIClient {
         }
     }
 
-    private func send(_ req: URLRequest) async throws -> Data {
+    func send(_ req: URLRequest) async throws -> Data {
         let (data, response) = try await session.data(for: req)
         try check(data, response)
         return data
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, _ req: URLRequest) async throws -> T {
+    func decode<T: Decodable>(_ type: T.Type, _ req: URLRequest) async throws -> T {
         try JSONDecoder().decode(T.self, from: try await send(req))
     }
 
@@ -122,7 +122,7 @@ final class APIClient {
         try await fetchFile(req, to: destination, progress: progress)
     }
 
-    private func fetchFile(_ request: URLRequest, to destination: URL, progress: @escaping ProgressHandler) async throws {
+    func fetchFile(_ request: URLRequest, to destination: URL, progress: @escaping ProgressHandler) async throws {
         let (tempURL, response) = try await TransferSession.shared.download(request, progress: progress)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -162,7 +162,8 @@ final class APIClient {
     /// The multipart body is written to a temp file first so big files don't have
     /// to fit in memory; the fingerprint is computed in the same pass.
     @discardableResult
-    func upload(file: URL, to folder: String, progress: @escaping ProgressHandler = { _, _ in }) async throws -> String {
+    func upload(file: URL, to folder: String, replace: Bool = false, ifModified: Double? = nil,
+                progress: @escaping ProgressHandler = { _, _ in }) async throws -> UploadResult.Saved {
         let boundary = "HomeDrive-\(UUID().uuidString)"
         let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: bodyURL) }
@@ -185,7 +186,10 @@ final class APIClient {
         try out.close()
         let localHash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
 
-        var req = makeRequest("upload", query: ["path": folder], method: "POST")
+        var query = ["path": folder]
+        if replace { query["replace"] = "true" }
+        if let ifModified { query["if_modified"] = String(ifModified) }
+        var req = makeRequest("upload", query: query, method: "POST")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let (data, response) = try await TransferSession.shared.upload(req, fromFile: bodyURL, progress: progress)
         try check(data, response)
@@ -197,6 +201,6 @@ final class APIClient {
         guard remoteHash == localHash, saved.size == localSize else {
             throw APIError(message: "Upload check failed: the copy on the server doesn't match. Nothing was deleted.", status: 0)
         }
-        return remoteHash
+        return saved
     }
 }

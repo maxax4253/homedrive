@@ -15,6 +15,9 @@ struct ScreenSwitcher: View {
             case .drive: DriveScreen()
             case .recent: RecentScreen()
             case .starred: StarredScreen()
+            case .links: LinksScreen()
+            case .offline: OfflineScreen()
+            case .admin: AdminScreen()
             case .trash: TrashScreen()
             }
         }
@@ -29,9 +32,10 @@ struct DriveScreen: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 14) {
                 BreadcrumbTitle()
                 Spacer()
+                if viewMode == .grid { SortMenu() }
                 ViewToggle(mode: $viewMode)
             }
             .padding(.horizontal, 28)
@@ -194,6 +198,7 @@ struct ListScreen<Content: View>: View {
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                 Spacer()
+                if toggle == .grid { SortMenu() }
                 ViewToggle(mode: $toggle)
             }
             .padding(.horizontal, 28)

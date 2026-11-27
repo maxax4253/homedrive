@@ -10,12 +10,29 @@ cd "$SERVER"
 # Use sudo only if this user can't talk to Docker yet (e.g. right after install).
 DOCKER="docker"
 docker info >/dev/null 2>&1 || DOCKER="sudo docker"
-compose() { $DOCKER compose --env-file .env "$@"; }
+
+env_get() { grep "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed "s/^'//; s/'$//"; }
+env_set() {
+  (umask 077
+   grep -v "^$1=" .env > .env.tmp || true
+   printf "%s='%s'\n" "$1" "$2" >> .env.tmp
+   mv .env.tmp .env)
+}
+
+compose() {
+  local profile=()
+  [ "$(env_get LINKS)" = "1" ] && profile=(--profile links)
+  $DOCKER compose --env-file .env "${profile[@]}" "$@"
+}
 
 address() {
-  local ip
-  ip=$(grep '^BIND_IP=' .env 2>/dev/null | cut -d= -f2)
-  echo "http://${ip:-?}:8090"
+  echo "http://$(env_get BIND_IP):8090"
+}
+
+tailnet_name() {
+  # This machine's name on Tailscale, e.g. server-macmini.tail92b8fb.ts.net
+  tailscale status --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null
 }
 
 case "${1:-help}" in
@@ -27,7 +44,9 @@ case "${1:-help}" in
     else
       echo "Not responding at $(address)"
     fi
-    df -h "$(grep '^FILES_DIR=' .env | cut -d= -f2)" 2>/dev/null | tail -1 | awk '{print "Storage: " $3 " used, " $4 " free"}'
+    df -h "$(env_get FILES_DIR)" 2>/dev/null | tail -1 | awk '{print "Storage: " $3 " used, " $4 " free"}'
+    if [ -n "$(env_get BACKUP_DIR)" ]; then echo "Backups: on, to $(env_get BACKUP_DIR)"; else echo "Backups: off"; fi
+    if [ "$(env_get LINKS)" = "1" ]; then echo "Share links: on, $(env_get PUBLIC_URL)"; else echo "Share links: off"; fi
     ;;
   update)
     echo "Updating HomeDrive..."
@@ -41,6 +60,55 @@ case "${1:-help}" in
   start)   compose up -d ;;
   logs)    compose logs -f --tail 100 ;;
   url)     address ;;
+  links)
+    case "${2:-status}" in
+      on)
+        command -v tailscale >/dev/null || { echo "Tailscale isn't installed."; exit 1; }
+        name=$(tailnet_name)
+        [ -n "$name" ] || { echo "Couldn't find this machine's Tailscale name. Is Tailscale connected?"; exit 1; }
+        echo "Turning on public share links through Tailscale Funnel."
+        echo "Only the share-link pages are exposed; your files and login stay Tailscale-only."
+        echo "If Tailscale asks you to enable HTTPS or Funnel, open the link it prints, then run this again."
+        sudo tailscale funnel --bg 8091
+        env_set LINKS 1
+        env_set PUBLIC_URL "https://$name"
+        compose up -d
+        echo "Share links are on: https://$name/s/..."
+        ;;
+      off)
+        sudo tailscale funnel --https=443 off 2>/dev/null || sudo tailscale funnel reset 2>/dev/null || true
+        env_set LINKS 0
+        env_set PUBLIC_URL ""
+        $DOCKER compose --env-file .env --profile links rm -sf links >/dev/null 2>&1 || true
+        compose up -d
+        echo "Share links are off. Existing links stop working until you turn them back on."
+        ;;
+      *)
+        if [ "$(env_get LINKS)" = "1" ]; then echo "Share links: on ($(env_get PUBLIC_URL))"; else echo "Share links: off"; fi
+        ;;
+    esac
+    ;;
+  backup)
+    case "${2:-status}" in
+      now)    compose exec homedrive python -m app.cli backup-now ;;
+      status) compose exec homedrive python -m app.cli backup-status ;;
+      off)
+        env_set BACKUP_DIR ""
+        compose up -d
+        echo "Nightly backups are off (existing snapshots were left where they are)."
+        ;;
+      *)
+        target="$2"
+        [ "${target#/}" != "$target" ] || { echo "Use a full path, e.g.: homedrive backup /mnt/backup"; exit 1; }
+        mkdir -p "$target" 2>/dev/null || sudo mkdir -p "$target"
+        [ -w "$target" ] || sudo chown "$(id -u):$(id -g)" "$target"
+        env_set BACKUP_DIR "$target"
+        compose up -d
+        echo "Nightly backups are on: every night at 3am to $target"
+        echo "Run one right now with: homedrive backup now"
+        ;;
+    esac
+    ;;
   password)
     read -rsp "New HomeDrive password: " pw < /dev/tty; echo
     [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
@@ -63,7 +131,14 @@ homedrive: manage your HomeDrive server
   homedrive stop       stop the server
   homedrive start      start it again
   homedrive url        print the address to use in the Mac app
-  homedrive password   change the login password
+  homedrive password   change the admin password
+
+  homedrive backup /mnt/backup   turn on nightly backups to that folder
+  homedrive backup now           back up right now
+  homedrive backup off           turn nightly backups off
+
+  homedrive links on   turn on public share links (Tailscale Funnel)
+  homedrive links off  turn them off
 EOF
     ;;
 esac

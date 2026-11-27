@@ -44,8 +44,10 @@ fi
 mkdir -p data
 DOCKER="docker"
 docker info >/dev/null 2>&1 || DOCKER="sudo docker"
-$DOCKER compose --env-file .env up -d --build
-IP=$(grep '^BIND_IP=' .env | cut -d= -f2)
+PROFILE=()
+grep -q "^LINKS='\?1" .env && PROFILE=(--profile links)
+$DOCKER compose --env-file .env "${PROFILE[@]}" up -d --build
+IP=$(grep '^BIND_IP=' .env | cut -d= -f2 | tr -d "'")
 echo
 echo "HomeDrive is running at http://$IP:8090"
 echo "Check it with: curl http://$IP:8090/api/health"

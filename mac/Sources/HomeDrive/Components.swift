@@ -208,6 +208,12 @@ struct NameCell: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textSecondary)
             }
+            if model.offline.isPinned(entry.path) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.accent)
+                    .help("Available offline")
+            }
         }
         .padding(.trailing, 12)
     }
@@ -411,8 +417,16 @@ struct ItemMenu: View {
     private var normalMenu: some View {
         if items.count == 1, let entry = items.first {
             Button(entry.isDir ? "Open" : "Preview") { Task { await model.open(entry) } }
+            if !entry.isDir {
+                Button("Open in app (saves back)") { Task { await model.openInApp(entry) } }
+            }
             if model.section != .drive || model.activeSearch != nil {
                 Button("Show file location") { Task { await model.showLocation(of: entry) } }
+            }
+            Divider()
+            Button("Get link…") { model.startShare(entry) }
+            if !entry.isDir {
+                Button("Version history…") { Task { await model.showVersions(entry) } }
             }
             Divider()
         }
@@ -429,6 +443,10 @@ struct ItemMenu: View {
             let allStarred = items.allSatisfy(\.isStarred)
             Button(allStarred ? "Remove from Starred" : "Add to Starred") {
                 Task { await model.setStarred(items, !allStarred) }
+            }
+            let allOffline = items.allSatisfy { model.offline.isPinned($0.path) }
+            Button(allOffline ? "Remove offline copy" : "Make available offline") {
+                Task { await model.setOffline(items, !allOffline) }
             }
             Divider()
             Button("Move to trash", role: .destructive) { model.deleting = items }

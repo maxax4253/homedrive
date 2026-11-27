@@ -10,8 +10,8 @@ from typing import Iterator
 class Stars:
     """Starred paths, saved as a JSON list in the data folder."""
 
-    def __init__(self, data_dir: Path):
-        self.file = data_dir / "stars.json"
+    def __init__(self, data_dir: Path, filename: str = "stars.json"):
+        self.file = data_dir / filename
         self.lock = threading.Lock()
         try:
             self.paths: set[str] = set(json.loads(self.file.read_text()))

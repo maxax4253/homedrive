@@ -14,6 +14,13 @@ class Settings:
     password: str
     secret: str
     token_days: int = 30
+    # Nightly backups: off unless a backup folder is mounted.
+    backup_dir: Path | None = None
+    backup_hour: int = 3
+    run_scheduler: bool = True
+    # Public address for share links, e.g. https://server.tailnet.ts.net (empty = links off).
+    public_url: str = ""
+    versions_to_keep: int = 10
 
 
 def load_settings() -> Settings:
@@ -38,6 +45,7 @@ def load_settings() -> Settings:
             secret_file.write_text(secret)
             secret_file.chmod(0o600)
 
+    backup = os.environ.get("HOMEDRIVE_BACKUP_DIR", "").strip()
     return Settings(
         files_root=files_root,
         data_dir=data_dir,
@@ -45,4 +53,7 @@ def load_settings() -> Settings:
         password=password,
         secret=secret,
         token_days=int(os.environ.get("HOMEDRIVE_TOKEN_DAYS", "30")),
+        backup_dir=Path(backup) if backup else None,
+        backup_hour=int(os.environ.get("HOMEDRIVE_BACKUP_HOUR", "3")),
+        public_url=os.environ.get("HOMEDRIVE_PUBLIC_URL", "").strip().rstrip("/"),
     )

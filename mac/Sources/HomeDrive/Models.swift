@@ -66,6 +66,7 @@ struct UploadResult: Decodable {
     struct Saved: Decodable {
         let path: String
         let size: Int64
+        let modified: Double
         let sha256: String?
     }
     let saved: [Saved]
@@ -81,6 +82,17 @@ struct MeResponse: Codable {
     let total: Int64
     let used: Int64
     let free: Int64
+    let isAdmin: Bool?
+    let quota: Int64?
+    let linksEnabled: Bool?
+    let backupsEnabled: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case username, total, used, free, quota
+        case isAdmin = "is_admin"
+        case linksEnabled = "links_enabled"
+        case backupsEnabled = "backups_enabled"
+    }
 }
 
 struct ServerError: Codable {

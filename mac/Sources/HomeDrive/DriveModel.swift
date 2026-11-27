@@ -3,15 +3,23 @@ import Foundation
 import Observation
 
 enum DriveSection: String, CaseIterable {
-    case drive, recent, starred, trash
+    case drive, recent, starred, links, offline, trash, admin
 
     var title: String {
         switch self {
         case .drive: return "My Drive"
         case .recent: return "Recent"
         case .starred: return "Starred"
+        case .links: return "Shared links"
+        case .offline: return "Offline"
+        case .admin: return "Admin"
         case .trash: return "Trash"
         }
+    }
+
+    /// Filled version for the selected sidebar row (not every symbol has one).
+    var selectedIcon: String {
+        self == .links ? icon : icon + ".fill"
     }
 
     var icon: String {
@@ -19,6 +27,9 @@ enum DriveSection: String, CaseIterable {
         case .drive: return "externaldrive"
         case .recent: return "clock"
         case .starred: return "star"
+        case .links: return "link"
+        case .offline: return "arrow.down.circle"
+        case .admin: return "person.2"
         case .trash: return "trash"
         }
     }
@@ -38,7 +49,7 @@ final class DriveModel {
     var username: String = UserDefaults.standard.string(forKey: "username") ?? ""
     var password = ""
     private(set) var isLoggedIn = false
-    private var api: APIClient?
+    private(set) var api: APIClient?
 
     // What's on screen
     private(set) var section: DriveSection = .drive
@@ -60,7 +71,7 @@ final class DriveModel {
 
     // Status
     var errorMessage: String?
-    private(set) var busyMessage: String?
+    var busyMessage: String?
     var previewURL: URL?
 
     // Dialogs & popovers
@@ -89,6 +100,47 @@ final class DriveModel {
     // Drag and drop
     var dropFolderTarget: String?
 
+    // Account
+    private(set) var isAdmin = false
+    private(set) var linksEnabled = false
+    private(set) var backupsEnabled = false
+    var showChangePassword = false
+    var oldPassword = ""
+    var newPassword = ""
+
+    // Share links
+    var shareLinks: [ShareLink] = []
+    var shareTarget: Entry?
+    var shareExpiry: ShareExpiry = .week
+    var sharePasswordOn = false
+    var sharePassword = ""
+    var createdLink: ShareLink?
+    var isCreatingLink = false
+    var revokingLink: ShareLink?
+
+    // Version history
+    var versionsTarget: Entry?
+    var versionList: [FileVersion] = []
+    var versionsLoading = false
+    var restoringVersion: FileVersion?
+
+    // Admin: people and backups
+    var users: [UserInfo] = []
+    var backupStatus: BackupStatus?
+    var showAddUser = false
+    var newUsername = ""
+    var newUserPassword = ""
+    var newUserQuota = ""
+    var resettingUser: UserInfo?
+    var resetPasswordText = ""
+    var deletingUser: UserInfo?
+    var quotaUser: UserInfo?
+    var quotaText = ""
+
+    // Offline copies and edit-and-save-back
+    let offline = OfflineStore()
+    let editing = EditSessions()
+
     // Thumbnails
     private(set) var thumbImages: [String: NSImage] = [:]
     private var thumbsLoading: Set<String> = []
@@ -98,10 +150,21 @@ final class DriveModel {
            let token = Keychain.load(account: serverURL) {
             api = APIClient(baseURL: url, token: token)
             isLoggedIn = true
+            offline.configure(account: accountKey)
         }
     }
 
+    /// Identifies this server + user, so offline copies never mix between accounts.
+    var accountKey: String {
+        let host = URL(string: serverURL)?.host ?? "server"
+        return "\(host)-\(username)"
+    }
+
     // MARK: - Derived
+
+    var sidebarSections: [DriveSection] {
+        DriveSection.allCases.filter { $0 != .admin || isAdmin }
+    }
 
     /// Entries in the order the user picked (folders always first, like Drive).
     var displayEntries: [Entry] {
@@ -190,6 +253,9 @@ final class DriveModel {
             UserDefaults.standard.set(username, forKey: "username")
             api = client
             password = ""
+            username = result.username
+            UserDefaults.standard.set(result.username, forKey: "username")
+            offline.configure(account: accountKey)
             isLoggedIn = true
             section = .drive
             path = ""
@@ -212,6 +278,17 @@ final class DriveModel {
         thumbImages = [:]
         activeSearch = nil
         searchText = ""
+        isAdmin = false
+        users = []
+        shareLinks = []
+        backupStatus = nil
+        editing.stopAll()
+    }
+
+    /// After changing your own password the server hands back a new token.
+    func replaceToken(_ token: String) {
+        api?.token = token
+        Keychain.save(token, account: serverURL)
     }
 
     // MARK: - Loading
@@ -231,12 +308,29 @@ final class DriveModel {
                     entries = try await api.recent(limit: 200)
                 case .starred:
                     entries = try await api.starred()
+                case .links:
+                    let result = try await api.shares()
+                    shareLinks = result.shares
+                    linksEnabled = result.linksEnabled
+                    entries = []
+                case .offline:
+                    entries = []
+                case .admin:
+                    users = (try? await api.users()) ?? []
+                    backupStatus = try? await api.backupStatus()
+                    entries = []
                 case .trash:
                     entries = try await api.trash()
                 }
             }
             selection = selection.filter { id in entries.contains { $0.id == id } }
-            storage = try? await api.me()
+            if let me = try? await api.me() {
+                storage = me
+                isAdmin = me.isAdmin ?? false
+                linksEnabled = me.linksEnabled ?? false
+                backupsEnabled = me.backupsEnabled ?? false
+                if section == .admin && !isAdmin { section = .drive }
+            }
         } catch let error as APIError where error.status == 401 {
             logout()
             errorMessage = "Your login expired. Please sign in again."
@@ -385,7 +479,7 @@ final class DriveModel {
     // MARK: - Transfer bookkeeping
 
     @discardableResult
-    private func addTransfer(_ transfer: Transfer) -> UUID {
+    func addTransfer(_ transfer: Transfer) -> UUID {
         transfers.append(transfer)
         autoCloseToken = UUID()   // new work cancels any pending auto-close
         return transfer.id
@@ -395,7 +489,7 @@ final class DriveModel {
 
     /// Once everything has finished without errors, close the popup after 5 seconds.
     /// If anything failed it stays open so you can see what went wrong.
-    private func scheduleAutoClose() {
+    func scheduleAutoClose() {
         guard activeTransferCount == 0, !transfers.isEmpty else { return }
         let anyFailed = transfers.contains { if case .failed = $0.state { return true } else { return false } }
         guard !anyFailed else { return }
@@ -408,14 +502,14 @@ final class DriveModel {
         }
     }
 
-    private func updateTransfer(_ id: UUID, _ change: (inout Transfer) -> Void) {
+    func updateTransfer(_ id: UUID, _ change: (inout Transfer) -> Void) {
         guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
         change(&transfers[i])
     }
 
     /// Runs one transfer, keeping its row in the popup up to date. Returns true on success.
     @discardableResult
-    private func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async -> Bool {
+    func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async -> Bool {
         updateTransfer(id) { $0.state = .active }
         let progress: ProgressHandler = { done, total in
             Task { @MainActor in
@@ -790,7 +884,7 @@ final class DriveModel {
 
     // MARK: - Helpers
 
-    private func join(_ folder: String, _ name: String) -> String {
+    func join(_ folder: String, _ name: String) -> String {
         folder.isEmpty ? name : "\(folder)/\(name)"
     }
 
@@ -803,7 +897,7 @@ final class DriveModel {
         return trimmed
     }
 
-    private func uniqueURL(_ url: URL) -> URL {
+    func uniqueURL(_ url: URL) -> URL {
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return url }
         let base = url.deletingPathExtension().lastPathComponent
@@ -817,7 +911,7 @@ final class DriveModel {
         }
     }
 
-    private func friendly(_ error: Error) -> String {
+    func friendly(_ error: Error) -> String {
         if let api = error as? APIError { return api.message }
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain {

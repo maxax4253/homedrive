@@ -20,8 +20,13 @@ struct MainView: View {
         .background(Theme.window)
         .overlay(alignment: .bottomTrailing) { TransfersPanel() }
         .quickLookPreview($model.previewURL)
-        .task { await model.refresh() }
+        .task {
+            await model.refresh()
+            model.startOfflineTimer()
+            await model.syncOffline()
+        }
         .modifier(Dialogs())
+        .modifier(FeatureSheets())
     }
 }
 
@@ -40,7 +45,7 @@ struct SideNav: View {
                 .padding(.leading, 14)
                 .padding(.bottom, 18)
             VStack(spacing: 2) {
-                ForEach(DriveSection.allCases, id: \.self) { section in
+                ForEach(model.sidebarSections, id: \.self) { section in
                     NavRow(section: section)
                 }
             }
@@ -158,7 +163,7 @@ struct NavRow: View {
             Task { await model.show(section) }
         } label: {
             HStack(spacing: 18) {
-                Image(systemName: isSelected ? section.icon + ".fill" : section.icon)
+                Image(systemName: isSelected ? section.selectedIcon : section.icon)
                     .font(.system(size: 16))
                     .frame(width: 22)
                 Text(section.title)
@@ -278,10 +283,13 @@ struct AccountMenu: View {
 
     var body: some View {
         Menu {
-            Text("Signed in as \(model.username)")
+            Text("Signed in as \(model.username)\(model.isAdmin ? " (admin)" : "")")
             Text(model.serverURL)
             Divider()
             Button("Refresh") { Task { await model.refresh() } }
+            if !model.isAdmin {
+                Button("Change password…") { model.showChangePassword = true }
+            }
             Button("Sign Out") { model.logout() }
         } label: {
             Text(initial)

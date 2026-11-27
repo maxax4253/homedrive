@@ -1,0 +1,15 @@
+services:
+  homedrive:
+    build:
+      context: .
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
+    env_file: .env
+    volumes:
+      - ${FILES_DIR:-~/drive}:/files
+      - ./data:/data
+    ports:
+      # Only reachable over Tailscale (Docker skips ufw, so don't use plain "8090:8000").
+      - "${BIND_IP:?run setup.sh first}:8090:8000"
+    restart: unless-stopped

@@ -36,11 +36,7 @@ To build the Mac app yourself instead, you need the Xcode command line tools: `x
 
 ### Releasing a new Mac build
 
-Push a version tag. GitHub Actions builds the app and attaches `HomeDrive.zip` to a release:
-
-```bash
-git tag v0.4.0 && git push origin v0.4.0
-```
+Bump `CFBundleShortVersionString` in `mac/Info.plist` and push to `main`. GitHub Actions builds the app (Apple silicon + Intel), tags it `v<version>` and attaches `HomeDrive.zip` to a new release. Every other push that touches `mac/` just checks that the app still builds.
 
 ## What it does (v0.4)
 

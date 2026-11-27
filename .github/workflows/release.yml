@@ -1,9 +1,14 @@
-# Builds the Mac app and attaches it to a GitHub Release (free for public repos).
-# Make a release by pushing a tag:  git tag v0.4.0 && git push origin v0.4.0
+# Builds the Mac app and publishes it as a GitHub Release (free for public repos).
+#
+# To release: bump CFBundleShortVersionString in mac/Info.plist and push to main.
+# If there's no release for that version yet, this builds one and tags it v<version>.
+# (Pushing a v* tag yourself also works.)
 name: Release Mac app
 
 on:
   push:
+    branches: [main]
+    paths: ["mac/**", ".github/workflows/release.yml"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -16,6 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Work out the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" mac/Info.plist)
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$v already exists; this run only checks that the app builds."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build HomeDrive.app (Apple silicon + Intel)
         run: OUT=dist UNIVERSAL=1 ./mac/build-app.sh
 
@@ -26,14 +45,16 @@ jobs:
           ls -lh HomeDrive.zip
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.version.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: HomeDrive ${{ steps.version.outputs.tag }}
           files: mac/dist/HomeDrive.zip
           generate_release_notes: true
 
-      - name: Keep the build (manual runs)
-        if: "!startsWith(github.ref, 'refs/tags/')"
+      - name: Keep the build
         uses: actions/upload-artifact@v4
         with:
           name: HomeDrive

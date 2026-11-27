@@ -1,5 +1,6 @@
 """HomeDrive API server (Tailscale-only). Share-link pages live in public.py."""
 
+import json
 import os
 import shutil
 import tempfile
@@ -84,6 +85,10 @@ class ShareBody(BaseModel):
     path: str
     expires_days: float | None = None
     password: str | None = None
+
+
+class LinksBody(BaseModel):
+    enabled: bool
 
 
 class RestoreVersionBody(BaseModel):
@@ -514,6 +519,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not db.revoke_share(token, s.user.username):
             raise HTTPException(404, "Link not found")
         return Response(status_code=204)
+
+    # ------------------------------------------------------------ share links switch (admin)
+    #
+    # The API runs in a sealed container, so it can't run Tailscale or Docker itself.
+    # Instead it drops a request file; a small helper on the server (a systemd path
+    # unit installed by `homedrive install-agent`) runs `homedrive links on/off` and
+    # writes its progress to status.json.
+
+    agent_dir = settings.data_dir / "agent"
+
+    def agent_status() -> dict:
+        try:
+            status = json.loads((agent_dir / "status.json").read_text())
+        except (FileNotFoundError, ValueError):
+            status = {}
+        pending = (agent_dir / "request.json").exists()
+        return {
+            "enabled": bool(settings.public_url),
+            "public_url": settings.public_url or None,
+            "agent_installed": (agent_dir / "installed").exists(),
+            "pending": pending,
+            "state": "working" if pending else status.get("state", "idle"),
+            "message": status.get("message"),
+            "approve_url": status.get("approve_url"),
+            "updated": status.get("updated"),
+        }
+
+    @app.get("/api/admin/links")
+    def links_status(s: Session = Depends(require_admin)):
+        return agent_status()
+
+    @app.post("/api/admin/links")
+    def set_links(body: LinksBody, s: Session = Depends(require_admin)):
+        if not (agent_dir / "installed").exists():
+            raise HTTPException(409, "The server helper isn't installed yet. On the server, run: sudo homedrive install-agent")
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        request = {"action": "links-on" if body.enabled else "links-off", "time": time.time()}
+        tmp = agent_dir / "request.tmp"
+        tmp.write_text(json.dumps(request))
+        tmp.replace(agent_dir / "request.json")
+        return agent_status()
 
     # ------------------------------------------------------------ accounts (admin)
 

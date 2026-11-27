@@ -271,3 +271,31 @@ def test_tree_for_offline(world):
     (files / "School" / ".DS_Store").write_text("junk")
     paths = sorted(e["path"] for e in admin.get("/api/tree", params={"path": "School"}).json()["entries"])
     assert paths == ["School/ECE/hw1.pdf", "School/notes.md"]
+
+
+def test_links_switch_requests(world):
+    admin, login, settings = world["admin"], world["login"], world["settings"]
+    agent = settings.data_dir / "agent"
+
+    st = admin.get("/api/admin/links").json()
+    assert st["enabled"] is True and st["agent_installed"] is False
+    # Without the server helper installed, the app is told how to install it.
+    r = admin.post("/api/admin/links", json={"enabled": False})
+    assert r.status_code == 409 and "install-agent" in r.json()["detail"]
+
+    agent.mkdir(parents=True, exist_ok=True)
+    (agent / "installed").write_text("1")
+    r = admin.post("/api/admin/links", json={"enabled": False})
+    assert r.status_code == 200 and r.json()["state"] == "working"
+    import json as _json
+    assert _json.loads((agent / "request.json").read_text())["action"] == "links-off"
+
+    # The helper reports back through status.json.
+    (agent / "request.json").unlink()
+    (agent / "status.json").write_text(_json.dumps({"state": "needs_approval", "message": "Approve it",
+                                                     "approve_url": "https://login.tailscale.com/f/funnel?x=1"}))
+    st = admin.get("/api/admin/links").json()
+    assert st["state"] == "needs_approval" and st["approve_url"].startswith("https://login.tailscale.com/")
+
+    admin.post("/api/users", json={"username": "sam", "password": "pw"})
+    assert login("sam", "pw").post("/api/admin/links", json={"enabled": True}).status_code == 403

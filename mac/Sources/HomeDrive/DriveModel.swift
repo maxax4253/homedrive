@@ -102,7 +102,7 @@ final class DriveModel {
 
     // Account
     private(set) var isAdmin = false
-    private(set) var linksEnabled = false
+    var linksEnabled = false
     private(set) var backupsEnabled = false
     var showChangePassword = false
     var oldPassword = ""
@@ -124,7 +124,9 @@ final class DriveModel {
     var versionsLoading = false
     var restoringVersion: FileVersion?
 
-    // Admin: people and backups
+    // Admin: people, backups and the share links switch
+    var linksStatus: LinksStatus?
+    var linksSwitchBusy = false
     var users: [UserInfo] = []
     var backupStatus: BackupStatus?
     var showAddUser = false
@@ -326,6 +328,7 @@ final class DriveModel {
                 case .admin:
                     users = (try? await api.users()) ?? []
                     backupStatus = try? await api.backupStatus()
+                    linksStatus = try? await api.linksStatus()
                     entries = []
                 case .trash:
                     entries = try await api.trash()

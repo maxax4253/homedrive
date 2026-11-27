@@ -107,14 +107,12 @@ struct ShareSheet: View {
                         subtitle: "Anyone with the link can download it. No account needed.")
 
             if !model.linksEnabled {
-                Label("Share links are off on the server. Turn them on by running “homedrive links on” on the server.",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
+                if model.isAdmin {
+                    LinksSwitch(compact: true)
+                } else {
+                    InfoBanner(icon: "exclamationmark.triangle",
+                               text: "Share links are turned off. Ask whoever runs this HomeDrive to turn them on in Admin.")
+                }
             }
 
             if let link = model.createdLink {
@@ -183,7 +181,7 @@ struct CreatedLinkView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Color(red: 0.12, green: 0.56, blue: 0.24))
             } else {
-                Text("The link was saved, but it won't work until share links are turned on on the server (homedrive links on). You'll find it under Shared links.")
+                Text("The link was saved, but it won't work until share links are turned on (Admin → Share links). You'll find it under Shared links.")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -362,8 +360,12 @@ struct LinksScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if !model.linksEnabled {
-                        InfoBanner(icon: "exclamationmark.triangle",
-                                   text: "Share links are off. Run “homedrive links on” on the server to let people open them.")
+                        if model.isAdmin {
+                            LinksSwitch(compact: false)
+                        } else {
+                            InfoBanner(icon: "exclamationmark.triangle",
+                                       text: "Share links are turned off, so people can't open these yet. Ask whoever runs this HomeDrive to turn them on.")
+                        }
                     }
                     if model.shareLinks.isEmpty && !model.isLoading {
                         EmptyState(icon: "link", title: "No shared links",
@@ -553,6 +555,10 @@ struct AdminScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     PeopleSection()
+                    VStack(alignment: .leading, spacing: 10) {
+                        SubHeader(title: "Share links")
+                        LinksSwitch(compact: false)
+                    }
                     BackupSection()
                 }
                 .padding(.horizontal, 28)
@@ -742,5 +748,77 @@ struct SortMenu: View {
                 Text(title)
             }
         }
+    }
+}
+
+// MARK: - Share links switch (admin)
+
+/// On/off switch for public share links, with the one-time Tailscale approval step.
+struct LinksSwitch: View {
+    @Environment(DriveModel.self) private var model
+    let compact: Bool
+
+    private var status: LinksStatus? { model.linksStatus }
+    private var isOn: Bool { status?.enabled ?? model.linksEnabled }
+    private var busy: Bool { model.linksSwitchBusy || (status?.isWorking ?? false) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: isOn ? "link.circle.fill" : "link.circle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(isOn ? Theme.accent : Theme.textSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isOn ? "Share links are on" : "Share links are off")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if busy {
+                    ProgressView().controlSize(.small)
+                }
+                Toggle("", isOn: toggleBinding)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(busy || status?.agentInstalled == false)
+            }
+            if let status, status.state == "needs_approval", status.approveURL != nil, !isOn {
+                HStack(spacing: 10) {
+                    Image(systemName: "hand.raised.fill").foregroundStyle(Color.orange)
+                    Text("One-time step: Tailscale needs your OK to make share pages public. Approve it, then flip the switch on again.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Approve in Tailscale") { model.openApproval() }
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if status?.agentInstalled == false {
+                Text("To use this switch, run “sudo homedrive install-agent” on the server once (or “homedrive update”).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(compact ? 12 : 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 12))
+        .task { await model.loadLinksStatus() }
+    }
+
+    private var subtitle: String {
+        if busy { return isOn ? "Turning off…" : "Turning on… (HomeDrive restarts for a few seconds)" }
+        if isOn, let url = status?.publicURL { return "Links open at \(url). Only share pages are public; your drive stays private." }
+        return "Lets people without an account download what you share. Only the share pages become public."
+    }
+
+    private var toggleBinding: Binding<Bool> {
+        Binding(get: { isOn }, set: { on in Task { await model.setLinksEnabled(on) } })
     }
 }

@@ -95,6 +95,25 @@ struct BackupStatus: Codable {
     }
 }
 
+struct LinksStatus: Codable {
+    let enabled: Bool
+    let publicURL: String?
+    let agentInstalled: Bool
+    let pending: Bool
+    let state: String          // idle, working, done, needs_approval, error
+    let message: String?
+    let approveURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, pending, state, message
+        case publicURL = "public_url"
+        case agentInstalled = "agent_installed"
+        case approveURL = "approve_url"
+    }
+
+    var isWorking: Bool { pending || state == "working" }
+}
+
 struct TokenResponse: Codable {
     let token: String
 }
@@ -153,6 +172,17 @@ extension APIClient {
 
     func revokeShare(_ token: String) async throws {
         _ = try await send(makeRequest("shares/\(token)", method: "DELETE"))
+    }
+
+    // Share links switch (admin)
+
+    func linksStatus() async throws -> LinksStatus {
+        try await decode(LinksStatus.self, makeRequest("admin/links"))
+    }
+
+    func setLinks(_ enabled: Bool) async throws -> LinksStatus {
+        struct Body: Encodable { let enabled: Bool }
+        return try await decode(LinksStatus.self, try jsonRequest("admin/links", body: Body(enabled: enabled)))
     }
 
     // Accounts

@@ -30,6 +30,7 @@ extension DriveModel {
 
     func startShare(_ entry: Entry) {
         shareTarget = entry
+        Task { await loadLinksStatus() }
         shareExpiry = .week
         sharePasswordOn = false
         sharePassword = ""
@@ -52,6 +53,42 @@ extension DriveModel {
         } catch {
             errorMessage = friendly(error)
         }
+    }
+
+    /// Admin switch: ask the server helper to turn public share links on or off,
+    /// then watch until it's done (the server restarts briefly while it switches).
+    func setLinksEnabled(_ on: Bool) async {
+        guard let api, isAdmin else { return }
+        linksSwitchBusy = true
+        defer { linksSwitchBusy = false }
+        do {
+            linksStatus = try await api.setLinks(on)
+        } catch {
+            errorMessage = friendly(error)
+            return
+        }
+        for _ in 0..<45 {
+            try? await Task.sleep(for: .seconds(2))
+            guard let status = try? await api.linksStatus() else { continue }   // restarting
+            linksStatus = status
+            if !status.isWorking && status.enabled == on { break }
+            if status.state == "needs_approval" || status.state == "error" { break }
+        }
+        linksEnabled = linksStatus?.enabled ?? linksEnabled
+        if let status = linksStatus, status.state == "error", let message = status.message {
+            errorMessage = message
+        }
+        await refresh()
+    }
+
+    func openApproval() {
+        guard let s = linksStatus?.approveURL, let url = URL(string: s) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func loadLinksStatus() async {
+        guard let api, isAdmin else { return }
+        linksStatus = try? await api.linksStatus()
     }
 
     func revoke(_ link: ShareLink) async {

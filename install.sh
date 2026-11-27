@@ -68,6 +68,9 @@ sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive
 say "Setting up the server"
 "$DIR/server/setup.sh" < /dev/tty
 
+say "Installing the app helper (lets the Mac app turn share links on/off)"
+sudo HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive install-agent
+
 cat <<EOF
 
 HomeDrive is installed.

@@ -6,10 +6,14 @@ DIR="${HOMEDRIVE_DIR:-$HOME/homedrive}"
 SERVER="$DIR/server"
 [ -d "$SERVER" ] || { echo "HomeDrive isn't installed in $DIR (set HOMEDRIVE_DIR if you moved it)."; exit 1; }
 cd "$SERVER"
+AGENT_DIR="$SERVER/data/agent"
+OWNER="$(stat -c %u:%g "$SERVER")"   # the normal user who owns the install
 
 # Use sudo only if this user can't talk to Docker yet (e.g. right after install).
 DOCKER="docker"
 docker info >/dev/null 2>&1 || DOCKER="sudo docker"
+SUDO="sudo"
+[ "$(id -u)" -eq 0 ] && SUDO=""
 
 env_get() { grep "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed "s/^'//; s/'$//"; }
 env_set() {
@@ -17,6 +21,8 @@ env_set() {
    grep -v "^$1=" .env > .env.tmp || true
    printf "%s='%s'\n" "$1" "$2" >> .env.tmp
    mv .env.tmp .env)
+  # When the helper runs this as root, keep .env owned by the normal user.
+  [ "$(id -u)" -eq 0 ] && chown "$OWNER" .env || true
 }
 
 compose() {
@@ -35,6 +41,58 @@ tailnet_name() {
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null
 }
 
+# Report progress to the Mac app (read by GET /api/admin/links).
+agent_status() {  # state message [approve_url]
+  mkdir -p "$AGENT_DIR"
+  python3 - "$1" "$2" "${3:-}" > "$AGENT_DIR/status.tmp" <<'PY'
+import json, sys, time
+state, message, url = sys.argv[1:4]
+print(json.dumps({"state": state, "message": message, "approve_url": url or None, "updated": time.time()}))
+PY
+  mv "$AGENT_DIR/status.tmp" "$AGENT_DIR/status.json"
+  [ "$(id -u)" -eq 0 ] && chown "$OWNER" "$AGENT_DIR/status.json" || true
+}
+
+# Turn Tailscale Funnel on for the share-link server.
+# Prints an approval URL and returns 2 if Tailscale needs you to allow Funnel first.
+funnel_on() {
+  local out code=0
+  out=$($SUDO timeout 25 tailscale funnel --bg 8091 2>&1) || code=$?
+  if [ "$code" -eq 0 ]; then return 0; fi
+  local url
+  url=$(printf '%s\n' "$out" | grep -oE 'https://login\.tailscale\.com/[^[:space:]]+' | head -1 || true)
+  if [ -n "$url" ]; then echo "$url"; return 2; fi
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
+links_on() {
+  command -v tailscale >/dev/null || { echo "Tailscale isn't installed on the server."; return 1; }
+  local name url code=0
+  name=$(tailnet_name)
+  [ -n "$name" ] || { echo "Couldn't find this machine's Tailscale name. Is Tailscale connected?"; return 1; }
+  url=$(funnel_on) || code=$?
+  if [ "$code" -eq 2 ]; then
+    echo "$url"
+    return 2
+  elif [ "$code" -ne 0 ]; then
+    echo "Tailscale couldn't turn on Funnel."
+    return 1
+  fi
+  env_set LINKS 1
+  env_set PUBLIC_URL "https://$name"
+  compose up -d >/dev/null 2>&1
+  echo "https://$name"
+}
+
+links_off() {
+  $SUDO tailscale funnel --https=443 off >/dev/null 2>&1 || $SUDO tailscale funnel reset >/dev/null 2>&1 || true
+  env_set LINKS 0
+  env_set PUBLIC_URL ""
+  $DOCKER compose --env-file .env --profile links rm -sf links >/dev/null 2>&1 || true
+  compose up -d >/dev/null 2>&1
+}
+
 case "${1:-help}" in
   status)
     compose ps
@@ -47,12 +105,14 @@ case "${1:-help}" in
     df -h "$(env_get FILES_DIR)" 2>/dev/null | tail -1 | awk '{print "Storage: " $3 " used, " $4 " free"}'
     if [ -n "$(env_get BACKUP_DIR)" ]; then echo "Backups: on, to $(env_get BACKUP_DIR)"; else echo "Backups: off"; fi
     if [ "$(env_get LINKS)" = "1" ]; then echo "Share links: on, $(env_get PUBLIC_URL)"; else echo "Share links: off"; fi
+    if systemctl is-active --quiet homedrive-agent.path 2>/dev/null; then echo "App helper: running"; else echo "App helper: not installed (sudo homedrive install-agent)"; fi
     ;;
   update)
     echo "Updating HomeDrive..."
     git -C "$DIR" pull --ff-only
     sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive 2>/dev/null || true
     compose up -d --build
+    sudo HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive install-agent >/dev/null 2>&1 || true
     echo "Updated. Running at $(address)"
     ;;
   restart) compose restart ;;
@@ -63,30 +123,87 @@ case "${1:-help}" in
   links)
     case "${2:-status}" in
       on)
-        command -v tailscale >/dev/null || { echo "Tailscale isn't installed."; exit 1; }
-        name=$(tailnet_name)
-        [ -n "$name" ] || { echo "Couldn't find this machine's Tailscale name. Is Tailscale connected?"; exit 1; }
         echo "Turning on public share links through Tailscale Funnel."
         echo "Only the share-link pages are exposed; your files and login stay Tailscale-only."
-        echo "If Tailscale asks you to enable HTTPS or Funnel, open the link it prints, then run this again."
-        sudo tailscale funnel --bg 8091
-        env_set LINKS 1
-        env_set PUBLIC_URL "https://$name"
-        compose up -d
-        echo "Share links are on: https://$name/s/..."
+        code=0
+        result=$(links_on) || code=$?
+        if [ "$code" -eq 2 ]; then
+          echo "Tailscale needs your OK first. Open this link, allow HTTPS/Funnel, then run this again:"
+          echo "  $result"
+          exit 1
+        elif [ "$code" -ne 0 ]; then
+          echo "$result"; exit 1
+        fi
+        echo "Share links are on: $result/s/..."
         ;;
       off)
-        sudo tailscale funnel --https=443 off 2>/dev/null || sudo tailscale funnel reset 2>/dev/null || true
-        env_set LINKS 0
-        env_set PUBLIC_URL ""
-        $DOCKER compose --env-file .env --profile links rm -sf links >/dev/null 2>&1 || true
-        compose up -d
+        links_off
         echo "Share links are off. Existing links stop working until you turn them back on."
         ;;
       *)
         if [ "$(env_get LINKS)" = "1" ]; then echo "Share links: on ($(env_get PUBLIC_URL))"; else echo "Share links: off"; fi
         ;;
     esac
+    ;;
+  agent)
+    # Run by systemd (homedrive-agent.service) when the Mac app asks for something.
+    request="$AGENT_DIR/request.json"
+    [ -f "$request" ] || exit 0
+    action=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("action",""))' "$request" 2>/dev/null || true)
+    rm -f "$request"
+    case "$action" in
+      links-on)
+        agent_status working "Turning share links on…"
+        code=0
+        result=$(links_on 2>&1) || code=$?
+        if [ "$code" -eq 0 ]; then
+          agent_status "done" "Share links are on: $result"
+        elif [ "$code" -eq 2 ]; then
+          agent_status needs_approval "Tailscale needs your OK to make share links public. Approve it, then turn the switch on again." "$result"
+        else
+          agent_status error "Couldn't turn share links on: $result"
+        fi
+        ;;
+      links-off)
+        agent_status working "Turning share links off…"
+        if links_off; then agent_status "done" "Share links are off."; else agent_status error "Couldn't turn share links off."; fi
+        ;;
+      *)
+        agent_status error "Unknown request: $action"
+        ;;
+    esac
+    ;;
+  install-agent)
+    # Lets the Mac app flip server settings (like share links) without SSH.
+    if [ "$(id -u)" -ne 0 ]; then
+      exec sudo HOMEDRIVE_DIR="$DIR" "$0" install-agent
+    fi
+    mkdir -p "$AGENT_DIR"
+    chown "$OWNER" "$SERVER/data" "$AGENT_DIR"
+    cat > /etc/systemd/system/homedrive-agent.path <<EOF
+[Unit]
+Description=HomeDrive helper (waits for requests from the Mac app)
+
+[Path]
+PathExists=$AGENT_DIR/request.json
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat > /etc/systemd/system/homedrive-agent.service <<EOF
+[Unit]
+Description=HomeDrive helper (runs a request from the Mac app)
+
+[Service]
+Type=oneshot
+Environment=HOMEDRIVE_DIR=$DIR
+ExecStart=/usr/local/bin/homedrive agent
+EOF
+    systemctl daemon-reload
+    systemctl enable --now homedrive-agent.path >/dev/null 2>&1
+    echo 1 > "$AGENT_DIR/installed"
+    chown "$OWNER" "$AGENT_DIR/installed"
+    echo "App helper installed: you can now turn share links on and off from the Mac app."
     ;;
   backup)
     case "${2:-status}" in
@@ -139,6 +256,7 @@ homedrive: manage your HomeDrive server
 
   homedrive links on   turn on public share links (Tailscale Funnel)
   homedrive links off  turn them off
+  homedrive install-agent   let the Mac app turn share links on/off (done by install/update)
 EOF
     ;;
 esac

@@ -216,6 +216,9 @@ extension DriveModel {
         defer { serverUpdating = false }
         do {
             linksStatus = try await api.requestServerUpdate()
+        } catch let error as APIError where error.status == 404 {
+            errorMessage = "This server is too old to update from the app. Run “homedrive update” on the server once; after that this button works."
+            return
         } catch {
             errorMessage = friendly(error)
             return

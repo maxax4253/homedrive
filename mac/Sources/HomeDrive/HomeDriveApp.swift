@@ -20,7 +20,10 @@ struct HomeDriveApp: App {
                     .keyboardShortcut("r")
                     .disabled(!model.isLoggedIn)
             }
-            CommandGroup(after: .appSettings) {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { Task { await model.show(.settings) } }
+                    .keyboardShortcut(",")
+                    .disabled(!model.isLoggedIn)
                 Button("Sign Out") { model.logout() }
                     .disabled(!model.isLoggedIn)
             }

@@ -3,7 +3,7 @@ import Foundation
 import Observation
 
 enum DriveSection: String, CaseIterable {
-    case drive, recent, starred, links, offline, trash, admin
+    case drive, recent, starred, links, offline, trash, admin, settings
 
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum DriveSection: String, CaseIterable {
         case .offline: return "Offline"
         case .admin: return "Admin"
         case .trash: return "Trash"
+        case .settings: return "Settings"
         }
     }
 
@@ -31,6 +32,7 @@ enum DriveSection: String, CaseIterable {
         case .offline: return "arrow.down.circle"
         case .admin: return "person.2"
         case .trash: return "trash"
+        case .settings: return "gearshape"
         }
     }
 }
@@ -123,6 +125,13 @@ final class DriveModel {
     var versionList: [FileVersion] = []
     var versionsLoading = false
     var restoringVersion: FileVersion?
+
+    // Settings
+    var toastMessage: String?
+    var confirmRemoveOffline = false
+    var serverVersion: String?
+    var latestRelease: String?
+    var checkingForUpdate = false
 
     // Admin: people, backups and the share links switch
     var linksStatus: LinksStatus?
@@ -328,7 +337,10 @@ final class DriveModel {
                 case .admin:
                     users = (try? await api.users()) ?? []
                     backupStatus = try? await api.backupStatus()
-                    linksStatus = try? await api.linksStatus()
+                    entries = []
+                case .settings:
+                    serverVersion = try? await api.serverVersion()
+                    if isAdmin { linksStatus = try? await api.linksStatus() }
                     entries = []
                 case .trash:
                     entries = try await api.trash()

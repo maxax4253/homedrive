@@ -49,7 +49,10 @@ extension DriveModel {
             let link = try await api.createShare(entry.path, expiresDays: shareExpiry.days,
                                                  password: sharePasswordOn ? sharePassword : nil)
             createdLink = link
-            if let url = link.url { copyToClipboard(url) }
+            if let url = link.url {
+                copyToClipboard(url)
+                toast("Link copied")
+            }
         } catch {
             errorMessage = friendly(error)
         }

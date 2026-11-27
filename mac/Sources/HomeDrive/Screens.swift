@@ -18,6 +18,7 @@ struct ScreenSwitcher: View {
             case .links: LinksScreen()
             case .offline: OfflineScreen()
             case .admin: AdminScreen()
+            case .settings: SettingsScreen()
             case .trash: TrashScreen()
             }
         }

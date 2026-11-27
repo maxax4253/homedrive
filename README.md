@@ -28,7 +28,7 @@ homedrive backup now           # back up right now
 homedrive links on             # public share links through Tailscale Funnel
 ```
 
-**Mac app:**
+**Mac app** (after the first install, use **Settings → Check for updates** to update from inside the app):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maxax4253/homedrive/main/install-mac.sh | bash
@@ -52,7 +52,7 @@ Bump `CFBundleShortVersionString` in `mac/Info.plist` and push to `main`. GitHub
 
 **Accounts:** the admin (from setup) sees the whole drive. Add family or roommates on the **Admin** page: each person gets a private `Users/<name>` folder plus a **Shared** folder everyone can use, with an optional storage limit. Resetting someone's password signs them out everywhere.
 
-**Share links:** right-click, then **Get link…**, with an expiry (1/7/30 days or never) and an optional password. The link opens a simple download page; folders download as a zip. The public pages run as a separate, read-only server that can only serve share links, so your drive, login and API stay Tailscale-only. Turn it on with the **Share links** switch on the Admin page (or `homedrive links on`). It uses Tailscale Funnel, so there are no router changes. The first time, the app shows an **Approve in Tailscale** button for the one-time permission. The switch works through a small helper on the server (`homedrive install-agent`, set up by the installer and by `homedrive update`), because the HomeDrive container itself can't change Tailscale or Docker. Manage links on the **Shared links** page.
+**Share links:** right-click, then **Get link…**, with an expiry (1/7/30 days or never) and an optional password. The link opens a simple download page; folders download as a zip. The public pages run as a separate, read-only server that can only serve share links, so your drive, login and API stay Tailscale-only. Turn it on with the **Share links** switch in **Settings** (⌘,) (or `homedrive links on`). It uses Tailscale Funnel, so there are no router changes. The first time, the app shows an **Approve in Tailscale** button for the one-time permission. The switch works through a small helper on the server (`homedrive install-agent`, set up by the installer and by `homedrive update`), because the HomeDrive container itself can't change Tailscale or Docker. Find and copy your links on the **Shared links** page (**Copy link**, or right-click).
 
 **Backups and version history:** `homedrive backup <folder>` takes a snapshot every night at 3am. Unchanged files are hard links, so each snapshot is a full copy that only costs the space of what changed. It keeps every day for a week, weekly for a month, and monthly for 6 months. Right-click a file, then **Version history…** to download or restore an older copy from backups or from earlier edits. Restoring is undoable.
 

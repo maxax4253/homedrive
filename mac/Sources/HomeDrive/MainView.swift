@@ -389,10 +389,20 @@ struct StatusToast: View {
 
     var body: some View {
         if let busy = model.busyMessage {
-            HStack(spacing: 10) {
+            pill {
                 ProgressView().controlSize(.small).tint(.white)
                 Text(busy).lineLimit(1)
             }
+        } else if let toast = model.toastMessage {
+            pill {
+                Image(systemName: "checkmark.circle.fill")
+                Text(toast).lineLimit(1)
+            }
+        }
+    }
+
+    private func pill<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 10) { content() }
             .font(.system(size: 13))
             .foregroundStyle(Color.white)
             .padding(.horizontal, 18)
@@ -400,7 +410,6 @@ struct StatusToast: View {
             .background(Color(white: 0.2), in: RoundedRectangle(cornerRadius: 8))
             .padding(.bottom, 20)
             .allowsHitTesting(false)
-        }
     }
 }
 

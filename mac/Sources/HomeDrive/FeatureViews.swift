@@ -111,7 +111,7 @@ struct ShareSheet: View {
                     LinksSwitch(compact: true)
                 } else {
                     InfoBanner(icon: "exclamationmark.triangle",
-                               text: "Share links are turned off. Ask whoever runs this HomeDrive to turn them on in Admin.")
+                               text: "Share links are turned off. Ask whoever runs this HomeDrive to turn them on.")
                 }
             }
 
@@ -181,7 +181,7 @@ struct CreatedLinkView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Color(red: 0.12, green: 0.56, blue: 0.24))
             } else {
-                Text("The link was saved, but it won't work until share links are turned on (Admin → Share links). You'll find it under Shared links.")
+                Text("The link was saved, but it won't work until share links are turned on (Settings → Share links). You'll find it under Shared links.")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.textSecondary)
             }
@@ -441,21 +441,41 @@ struct LinkRow: View {
                     .foregroundStyle(Theme.textSecondary)
                     .frame(width: 90, alignment: .leading)
                 HStack(spacing: 8) {
-                    if let url = link.url {
-                        Button("Copy link") { model.copyToClipboard(url) }
-                    }
+                    Button("Copy link") { copy() }
+                        .help(link.url == nil ? "Turn on share links in Settings first" : "Copy the link to send to someone")
                     Button("Turn off") { model.revokingLink = link }
                 }
                 .frame(width: 170, alignment: .trailing)
             }
             .padding(.horizontal, 16)
             .frame(height: 56)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Copy link") { copy() }
+                if let url = link.url, let u = URL(string: url) {
+                    Button("Open in browser") { NSWorkspace.shared.open(u) }
+                }
+                Divider()
+                Button("Turn off link", role: .destructive) { model.revokingLink = link }
+            }
             Rectangle().fill(Theme.divider).frame(height: 1)
+        }
+    }
+
+    private func copy() {
+        if let url = link.url {
+            model.copyToClipboard(url)
+            model.toast("Link copied")
+        } else {
+            model.errorMessage = model.isAdmin
+                ? "Share links are turned off, so this link doesn't have a web address yet. Turn them on in Settings → Share links, then copy it."
+                : "Share links are turned off. Ask whoever runs this HomeDrive to turn them on."
         }
     }
 
     private var subtitle: String {
         if !link.active { return "Not working: the file was moved out of reach or deleted" }
+        if link.url == nil { return "Created \(Format.date(link.createdDate)) · waiting for share links to be turned on" }
         return "Created \(Format.date(link.createdDate))"
     }
 
@@ -555,10 +575,6 @@ struct AdminScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     PeopleSection()
-                    VStack(alignment: .leading, spacing: 10) {
-                        SubHeader(title: "Share links")
-                        LinksSwitch(compact: false)
-                    }
                     BackupSection()
                 }
                 .padding(.horizontal, 28)

@@ -68,6 +68,11 @@ final class APIClient {
         _ = try await send(makeRequest("health"))
     }
 
+    func serverVersion() async throws -> String {
+        struct Health: Decodable { let version: String }
+        return try await decode(Health.self, makeRequest("health")).version
+    }
+
     func login(username: String, password: String) async throws -> LoginResponse {
         try await decode(LoginResponse.self, try jsonRequest("login", body: ["username": username, "password": password]))
     }

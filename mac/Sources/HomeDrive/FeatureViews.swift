@@ -111,6 +111,8 @@ struct ShareSheet: View {
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                     .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
             }
@@ -343,6 +345,7 @@ struct InfoBanner: View {
         Label(text, systemImage: icon)
             .font(.system(size: 13))
             .foregroundStyle(Theme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)

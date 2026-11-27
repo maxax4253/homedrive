@@ -355,8 +355,7 @@ final class DriveModel {
                 if section == .admin && !isAdmin { section = .drive }
             }
         } catch let error as APIError where error.status == 401 {
-            logout()
-            errorMessage = "Your login expired. Please sign in again."
+            signOutIfExpired(error)
         } catch let error as APIError where error.status == 404 && section == .drive && !path.isEmpty {
             path = ""
             await refresh()

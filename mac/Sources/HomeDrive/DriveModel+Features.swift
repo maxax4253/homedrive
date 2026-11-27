@@ -282,6 +282,20 @@ extension DriveModel {
     /// Upload the edited file. If the server copy changed meanwhile, keep both.
     func saveBack(_ session: EditSessions.Session) async {
         guard let api else { return }
+        // Apps often save twice in a row. Uploading both at once would make the second
+        // look like a conflict, so queue it until the first finishes.
+        if session.uploading {
+            session.savedAgain = true
+            return
+        }
+        session.uploading = true
+        defer {
+            session.uploading = false
+            if session.savedAgain {
+                session.savedAgain = false
+                Task { await self.saveBack(session) }
+            }
+        }
         let attrs = try? FileManager.default.attributesOfItem(atPath: session.local.path)
         guard let changed = attrs?[.modificationDate] as? Date, changed > session.lastLocalChange.addingTimeInterval(0.5) else { return }
         session.lastLocalChange = changed

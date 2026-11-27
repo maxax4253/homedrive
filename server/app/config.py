@@ -2,6 +2,8 @@
 
 import os
 import secrets
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,11 +25,33 @@ class Settings:
     versions_to_keep: int = 10
 
 
+UPLOAD_TMP = ".upload-tmp"
+
+
+def use_upload_tmp(files_root: Path) -> None:
+    """Spool incoming uploads on the files drive instead of the container's /tmp.
+
+    Otherwise a big upload is first written to the system disk (which may be much
+    smaller than the files drive) and then copied again. Leftovers from a crash are
+    cleared on startup.
+    """
+    if not os.access(files_root, os.W_OK):
+        return  # read-only files (the share-link server): keep the default
+    tmp = files_root / UPLOAD_TMP
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        tmp.mkdir(exist_ok=True)
+    except OSError:
+        return
+    tempfile.tempdir = str(tmp)
+
+
 def load_settings() -> Settings:
     files_root = Path(os.environ.get("HOMEDRIVE_FILES", "/files")).resolve()
     data_dir = Path(os.environ.get("HOMEDRIVE_DATA", "/data")).resolve()
     files_root.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
+    use_upload_tmp(files_root)
 
     username = os.environ.get("HOMEDRIVE_USERNAME", "admin")
     password = os.environ.get("HOMEDRIVE_PASSWORD", "")

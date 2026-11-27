@@ -44,7 +44,9 @@ class Backups:
     def _write_status(self, **changes) -> None:
         status = self._read_status()
         status.update(changes)
-        self.status_file.write_text(json.dumps(status))
+        tmp = self.status_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(status))
+        tmp.replace(self.status_file)
 
     def snapshots(self) -> list[str]:
         if not self.enabled or not self.snapshots_dir.is_dir():
@@ -88,7 +90,8 @@ class Backups:
             partial = self.snapshots_dir / f"{name}.partial"
             if partial.exists():
                 shutil.rmtree(partial)
-            cmd = ["rsync", "-a", "--delete", "--exclude=.upload-*", "--exclude=/.trash/"]
+            # Skip half-finished uploads and every Trash (yours and other people's).
+            cmd = ["rsync", "-a", "--delete", "--exclude=.upload-*", "--exclude=.trash/"]
             previous = self.snapshots()
             if previous:
                 cmd.append(f"--link-dest={self.snapshots_dir / previous[0]}")

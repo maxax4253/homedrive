@@ -105,9 +105,8 @@ final class OfflineStore {
         var result: [String: LocalFile] = [:]
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         func add(_ url: URL) {
-            let name = url.lastPathComponent
             // Skip system junk and Office/LibreOffice lock files.
-            guard !name.hasPrefix("."), !name.hasPrefix("~$") else { return }
+            guard !Self.isIgnored(url.lastPathComponent) else { return }
             guard let v = try? url.resourceValues(forKeys: Set(keys)), v.isRegularFile == true,
                   let path = serverPath(for: url) else { return }
             result[path] = LocalFile(url: url,
@@ -125,6 +124,11 @@ final class OfflineStore {
             for case let url as URL in walker { add(url) }
         }
         return result
+    }
+
+    /// Names offline sync leaves alone on both sides.
+    nonisolated static func isIgnored(_ name: String) -> Bool {
+        name.hasPrefix(".") || name.hasPrefix("~$")
     }
 
     func rootExistsLocally(_ root: Item) -> Bool {
@@ -158,11 +162,17 @@ final class OfflineStore {
         save()
     }
 
-    /// Stop keeping it offline. Removes the local copy (the server copy is untouched).
+    /// Stop keeping it offline. The local copy goes to the Mac's Trash (not deleted
+    /// outright), so an edit that hadn't synced yet can still be rescued.
     func unpin(_ path: String) {
         items.removeAll { $0.path == path }
         for key in baselinePaths(under: path) { baselines.removeValue(forKey: key) }
-        try? FileManager.default.removeItem(at: localURL(for: path))
+        let url = localURL(for: path)
+        if FileManager.default.fileExists(atPath: url.path) {
+            if (try? FileManager.default.trashItem(at: url, resultingItemURL: nil)) == nil {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         save()
     }
 

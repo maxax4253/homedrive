@@ -14,7 +14,7 @@ COPY app ./app
 # are owned by you, not root. Override with PUID/PGID build args if needed.
 ARG PUID=1000
 ARG PGID=1000
-RUN groupadd -g ${PGID} homedrive && useradd -u ${PUID} -g ${PGID} -M homedrive
+RUN groupadd -o -g ${PGID} homedrive && useradd -o -u ${PUID} -g ${PGID} -M homedrive
 USER homedrive
 
 ENV HOMEDRIVE_FILES=/files HOMEDRIVE_DATA=/data

@@ -15,6 +15,9 @@ final class EditSessions {
         var lastLocalChange: Date
         var watcher: DispatchSourceFileSystemObject?
         var pending: DispatchWorkItem?
+        /// An upload is running; another save arrived meanwhile and should go up after it.
+        var uploading = false
+        var savedAgain = false
 
         init(path: String, name: String, local: URL, baseModified: Double, lastLocalChange: Date) {
             self.path = path
@@ -31,6 +34,22 @@ final class EditSessions {
     var editRoot: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("HomeDrive/Editing", isDirectory: true)
+    }
+
+    init() {
+        removeOldCopies()
+    }
+
+    /// Copies from earlier runs aren't watched any more (sessions don't survive a
+    /// restart), so clear out ones older than a few days instead of letting them pile up.
+    private func removeOldCopies() {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-3 * 86400)
+        let dirs = (try? fm.contentsOfDirectory(at: editRoot, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for dir in dirs {
+            let changed = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if (changed ?? .distantPast) < cutoff { try? fm.removeItem(at: dir) }
+        }
     }
 
     func session(for path: String) -> Session? { sessions[path] }

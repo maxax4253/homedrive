@@ -1,6 +1,7 @@
 """Starred items and streaming zip downloads."""
 
 import json
+import os
 import threading
 import zipfile
 from pathlib import Path
@@ -50,6 +51,17 @@ class Stars:
         return sorted(self.paths)
 
 
+def visible_files(folder: Path) -> Iterator[Path]:
+    """Every regular file under a folder, skipping hidden things and symlinks
+    (a symlink could point outside the drive)."""
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        for name in sorted(filenames):
+            f = Path(dirpath) / name
+            if not name.startswith(".") and not f.is_symlink() and f.is_file():
+                yield f
+
+
 class _Sink:
     """File-like object that collects what ZipFile writes so we can stream it out."""
 
@@ -84,12 +96,12 @@ def stream_zip(items: list[tuple[Path, str]]) -> Iterator[bytes]:
     with zipfile.ZipFile(sink, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
         for path, arcname in items:
             if path.is_dir():
-                files = sorted(p for p in path.rglob("*") if not any(part.startswith(".") for part in p.relative_to(path).parts))
-                if not any(p.is_file() for p in files):
+                empty = True
+                for f in visible_files(path):
+                    empty = False
+                    yield from _add_file(zf, sink, f, f"{arcname}/{f.relative_to(path).as_posix()}")
+                if empty:
                     zf.writestr(arcname.rstrip("/") + "/", b"")
-                for f in files:
-                    if f.is_file():
-                        yield from _add_file(zf, sink, f, f"{arcname}/{f.relative_to(path).as_posix()}")
             elif path.is_file():
                 yield from _add_file(zf, sink, path, arcname)
     tail = sink.take()

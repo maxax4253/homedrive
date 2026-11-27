@@ -23,7 +23,9 @@ final class TransferSession: NSObject, URLSessionDataDelegate, URLSessionDownloa
     private let lock = NSLock()
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
+        // After a big upload the server is quiet while it saves and fingerprints the
+        // file (a minute or more for tens of GB), so allow a long silence.
+        config.timeoutIntervalForRequest = 15 * 60
         config.timeoutIntervalForResource = 60 * 60 * 12
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1

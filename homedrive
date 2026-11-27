@@ -238,7 +238,7 @@ EOF
     [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
     case "$pw" in *"'"*) echo "Please don't use a ' (single quote) in the password."; exit 1 ;; esac
     (umask 077
-     grep -v '^HOMEDRIVE_PASSWORD=' .env > .env.tmp
+     grep -v '^HOMEDRIVE_PASSWORD=' .env > .env.tmp || true
      printf "HOMEDRIVE_PASSWORD='%s'\n" "$pw" >> .env.tmp
      mv .env.tmp .env)
     compose up -d

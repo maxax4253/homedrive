@@ -99,7 +99,11 @@ extension DriveModel {
 
         let remoteList = try await api.tree(root.path)
         var remote: [String: Entry] = [:]
-        for entry in remoteList where !entry.isDir { remote[entry.path] = entry }
+        // Same skip rule as the local side, or a server file like "~$x.docx" would look
+        // "deleted on the Mac" and get removed from HomeDrive.
+        for entry in remoteList where !entry.isDir && !OfflineStore.isIgnored(entry.name) {
+            remote[entry.path] = entry
+        }
         let local = offline.localFiles(under: root)
         let known = Set(offline.baselinePaths(under: root.path))
         let allPaths = Set(remote.keys).union(local.keys).union(known)
@@ -232,8 +236,13 @@ extension DriveModel {
             var url = local.url
             if saved.path != path {
                 // The server picked a different name (one already existed): match it locally.
+                // If this fails we must stop: otherwise the old name would look new
+                // again next time and upload another copy every sync.
                 let newURL = offline.localURL(for: saved.path)
-                try? FileManager.default.moveItem(at: local.url, to: newURL)
+                if FileManager.default.fileExists(atPath: newURL.path) {
+                    try FileManager.default.trashItem(at: newURL, resultingItemURL: nil)
+                }
+                try FileManager.default.moveItem(at: local.url, to: newURL)
                 url = newURL
             }
             recordBaseline(saved.path, url: url, serverModified: saved.modified, serverSize: saved.size)

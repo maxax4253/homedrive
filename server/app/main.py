@@ -21,6 +21,8 @@ from .db import Database, User
 from .extras import Stars, stream_zip
 from .versions import VersionStore
 
+__version__ = "0.6.0"
+
 try:
     from PIL import Image, ImageOps
 
@@ -126,13 +128,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.run_scheduler:
         backups.start_scheduler()
 
-    app = FastAPI(title="HomeDrive", version="0.5.0")
+    app = FastAPI(title="HomeDrive", version=__version__)
     usage_cache: dict[str, tuple[float, int]] = {}
     usage_lock = threading.Lock()
 
+    stars_cache: dict[str, Stars] = {}
+
     def stars_for(user: User) -> Stars:
+        # One shared object per user, so its lock really serializes concurrent changes.
         # The admin keeps the original stars.json so existing stars survive the upgrade.
-        return Stars(settings.data_dir, "stars.json" if user.is_admin else f"stars-{user.username}.json")
+        with usage_lock:
+            if user.username not in stars_cache:
+                name = "stars.json" if user.is_admin else f"stars-{user.username}.json"
+                stars_cache[user.username] = Stars(settings.data_dir, name)
+            return stars_cache[user.username]
 
     def require(request: Request) -> Session:
         header = request.headers.get("authorization", "")
@@ -303,7 +312,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 with Image.open(p) as img:
                     img = ImageOps.exif_transpose(img)
                     img.thumbnail((size, size))
-                    img.convert("RGB").save(cached, "JPEG", quality=82)
+                    # Write then rename, so a second request never reads half a thumbnail.
+                    tmp = cached.with_name(f".{cached.name}.{threading.get_ident()}")
+                    img.convert("RGB").save(tmp, "JPEG", quality=82)
+                    tmp.replace(cached)
             except Exception:
                 raise HTTPException(415, "Couldn't make a thumbnail")
         return FileResponse(cached, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
@@ -348,15 +360,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:
                 dest = storage.unique_path(folder / name)
             # Write to a temp file first so a dropped upload never leaves half a file.
-            with tempfile.NamedTemporaryFile(dir=folder, prefix=".upload-", delete=False) as tmp:
-                shutil.copyfileobj(f.file, tmp, length=1024 * 1024)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-                tmp_path = Path(tmp.name)
-            tmp_path.chmod(0o644)
-            if replace:
-                versions.save(dest)
-            tmp_path.replace(dest)
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=folder, prefix=".upload-", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                    shutil.copyfileobj(f.file, tmp, length=1024 * 1024)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                tmp_path.chmod(0o644)
+                if replace:
+                    versions.save(dest)
+                tmp_path.replace(dest)
+            except BaseException:
+                if tmp_path:
+                    tmp_path.unlink(missing_ok=True)
+                raise
             e = storage.entry(s.space, dest)
             # Fingerprint of what's actually on disk, so the app can confirm a
             # perfect copy before deleting anything from your Mac.
@@ -467,9 +485,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         old = version_file(p, body.version)
         with tempfile.NamedTemporaryFile(dir=p.parent, prefix=".upload-", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-        shutil.copy2(old, tmp_path)
-        versions.save(p)
-        tmp_path.replace(p)
+        try:
+            # copyfile (not copy2): the restored file gets a new modified time, so it
+            # shows in Recent and offline copies on Macs pick up the change.
+            shutil.copyfile(old, tmp_path)
+            tmp_path.chmod(0o644)
+            versions.save(p)
+            tmp_path.replace(p)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         return mark(s, [storage.entry(s.space, p)])[0]
 
     # ------------------------------------------------------------ backups (admin)
@@ -612,6 +637,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if u.is_admin:
             raise HTTPException(400, "The admin account can't be deleted")
         db.delete_user(username)
+        stars_cache.pop(username, None)
         # Their files stay in Users/<name> for the admin to keep or delete.
         return Response(status_code=204)
 

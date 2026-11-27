@@ -18,13 +18,14 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from . import auth, storage
 from .config import Settings, load_settings
 from .db import Database, verify_password
-from .extras import stream_zip
+from .extras import stream_zip, visible_files
 from .main import user_space
 
 UNLOCK_SECONDS = 600
 MAX_FAILURES = 8          # wrong passwords per IP...
 FAILURE_WINDOW = 600      # ...per 10 minutes
 MAX_HITS = 120            # page/download requests per IP per minute
+MAX_LINK_FAILURES = 30    # wrong passwords for one link from everyone together, per 10 minutes
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'",
@@ -43,6 +44,10 @@ class Limiter:
     def allow(self, key: str, limit: int, window: float, record: bool = True) -> bool:
         now = time.time()
         with self.lock:
+            if len(self.hits) > 20000:
+                # Forget visitors with nothing recent, so memory can't grow forever.
+                for k in [k for k, q in self.hits.items() if not q or q[-1] < now - FAILURE_WINDOW]:
+                    del self.hits[k]
             q = self.hits[key]
             while q and q[0] < now - window:
                 q.popleft()
@@ -110,9 +115,11 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="HomeDrive links", docs_url=None, redoc_url=None, openapi_url=None)
 
     def client_ip(request: Request) -> str:
-        # Tailscale Funnel / Cloudflare pass the visitor's address along.
+        # Tailscale Funnel adds the visitor's address to the END of X-Forwarded-For.
+        # Anything before it was sent by the visitor and can be faked, so use the last one.
         fwd = request.headers.get("x-forwarded-for", "")
-        return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+        last = fwd.split(",")[-1].strip()
+        return last or (request.client.host if request.client else "?")
 
     def lookup(token: str):
         """The share and the file it points to, or None if the link is dead."""
@@ -135,7 +142,7 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
 
     def describe(sh, p: Path) -> str:
         if p.is_dir():
-            files = sum(1 for _ in p.rglob("*") if _.is_file() and not _.name.startswith("."))
+            files = sum(1 for _ in visible_files(p))
             what = f"Folder · {files} file{'s' if files != 1 else ''} · downloads as .zip"
         else:
             what = _size(p.stat().st_size)
@@ -187,10 +194,13 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
         if not sh.has_password:
             return download_page(sh, p)
         key = f"fail:{client_ip(request)}"
-        if not limiter.allow(key, MAX_FAILURES, FAILURE_WINDOW, record=False):
+        link_key = f"linkfail:{sh.token}"   # also caps guessing spread over many addresses
+        if not (limiter.allow(key, MAX_FAILURES, FAILURE_WINDOW, record=False)
+                and limiter.allow(link_key, MAX_LINK_FAILURES, FAILURE_WINDOW, record=False)):
             return password_page(sh, p, "Too many wrong tries. Wait a few minutes and try again.")
         if not verify_password(password, sh.pw_hash):
             limiter.record(key)
+            limiter.record(link_key)
             return password_page(sh, p, "That password isn't right.")
         return download_page(sh, p, auth.sign_value(sh.token, settings.secret, UNLOCK_SECONDS))
 

@@ -205,7 +205,13 @@ extension DriveModel {
             // A tiny script finishes the swap after HomeDrive quits, then reopens it.
             let script = """
             while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done
-            rm -rf "$1" && mv "$2" "$1" && xattr -dr com.apple.quarantine "$1" 2>/dev/null
+            old="$1.old-$$"
+            if mv "$1" "$old" && mv "$2" "$1"; then
+              rm -rf "$old"
+              xattr -dr com.apple.quarantine "$1" 2>/dev/null
+            else
+              [ -d "$1" ] || mv "$old" "$1"   # put the old version back
+            fi
             /System/Library/CoreServices/pbs -update >/dev/null 2>&1
             open "$1"
             """

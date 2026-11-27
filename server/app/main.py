@@ -21,7 +21,7 @@ from .db import Database, User
 from .extras import Stars, stream_zip
 from .versions import VersionStore
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 try:
     from PIL import Image, ImageOps
@@ -580,16 +580,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def links_status(s: Session = Depends(require_admin)):
         return agent_status()
 
-    @app.post("/api/admin/links")
-    def set_links(body: LinksBody, s: Session = Depends(require_admin)):
+    def ask_agent(action: str) -> dict:
         if not (agent_dir / "installed").exists():
             raise HTTPException(409, "The server helper isn't installed yet. On the server, run: sudo homedrive install-agent")
+        if (agent_dir / "request.json").exists():
+            raise HTTPException(409, "The server is busy with another change. Try again in a minute.")
         agent_dir.mkdir(parents=True, exist_ok=True)
-        request = {"action": "links-on" if body.enabled else "links-off", "time": time.time()}
         tmp = agent_dir / "request.tmp"
-        tmp.write_text(json.dumps(request))
+        tmp.write_text(json.dumps({"action": action, "time": time.time()}))
         tmp.replace(agent_dir / "request.json")
         return agent_status()
+
+    @app.post("/api/admin/links")
+    def set_links(body: LinksBody, s: Session = Depends(require_admin)):
+        return ask_agent("links-on" if body.enabled else "links-off")
+
+    @app.post("/api/admin/update")
+    def update_server(s: Session = Depends(require_admin)):
+        """Pull the latest HomeDrive and rebuild. The server restarts partway through."""
+        return ask_agent("update")
 
     # ------------------------------------------------------------ accounts (admin)
 

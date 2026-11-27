@@ -89,3 +89,18 @@ def test_me_reports_homedrive_usage_separately(world):
     me = admin.get("/api/me").json()
     assert me["scope"] == "disk" and me["drive_used"] >= 5000
     assert me["used"] >= me["drive_used"]           # whole disk includes everything else
+
+
+def test_server_update_request(world):
+    import json
+    admin, login, settings = world["admin"], world["login"], world["settings"]
+    agent = settings.data_dir / "agent"
+    assert admin.post("/api/admin/update").status_code == 409      # helper not installed
+    agent.mkdir(parents=True, exist_ok=True)
+    (agent / "installed").write_text("1")
+    r = admin.post("/api/admin/update")
+    assert r.status_code == 200 and r.json()["state"] == "working"
+    assert json.loads((agent / "request.json").read_text())["action"] == "update"
+    assert admin.post("/api/admin/update").status_code == 409      # already busy
+    admin.post("/api/users", json={"username": "sam", "password": "pw"})
+    assert login("sam", "pw").post("/api/admin/update").status_code == 403

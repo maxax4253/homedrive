@@ -68,7 +68,20 @@ struct SettingsScreen: View {
                         }
                         SettingsRow(icon: "server.rack",
                                     title: "Server \(model.serverVersion ?? "…")",
-                                    detail: "Update the server with “homedrive update” on the server.") { EmptyView() }
+                                    detail: serverDetail) {
+                            if model.isAdmin {
+                                HStack(spacing: 8) {
+                                    if model.serverUpdating { ProgressView().controlSize(.small) }
+                                    if model.serverUpdateAvailable && model.linksStatus?.agentInstalled != false {
+                                        Button("Update server") { Task { await model.updateServer() } }
+                                            .disabled(model.serverUpdating)
+                                    } else {
+                                        Button("Check for updates") { Task { await model.checkForServerUpdate() } }
+                                            .disabled(model.serverUpdating || model.checkingForUpdate)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 28)
@@ -90,6 +103,19 @@ struct SettingsScreen: View {
             return model.updateAvailable ? "Version \(latest) is available." : "You're up to date."
         }
         return "Mac app"
+    }
+
+    private var serverDetail: String {
+        if !model.isAdmin { return "Run by whoever set up this HomeDrive." }
+        if model.serverUpdating { return "Updating… the server restarts for a moment." }
+        if let latest = model.serverLatest {
+            if !model.serverUpdateAvailable { return "The server is up to date." }
+            if model.linksStatus?.agentInstalled == false {
+                return "Version \(latest) is available. Run “homedrive update” on the server."
+            }
+            return "Version \(latest) is available."
+        }
+        return "Your Mac Mini"
     }
 
     private var removeBinding: Binding<Bool> {
@@ -162,6 +188,60 @@ extension DriveModel {
         }
     }
 
+    var serverUpdateAvailable: Bool {
+        guard let latest = serverLatest, let current = serverVersion else { return false }
+        return latest.compare(current, options: .numeric) == .orderedDescending
+    }
+
+    /// The newest server version is whatever is on GitHub's main branch.
+    func checkForServerUpdate() async {
+        checkingForUpdate = true
+        defer { checkingForUpdate = false }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: Self.serverSource)
+            let text = String(decoding: data, as: UTF8.self)
+            if let match = text.firstMatch(of: #/__version__ = "([0-9.]+)"/#) {
+                serverLatest = String(match.1)
+            }
+            serverVersion = try? await api?.serverVersion()
+        } catch {
+            errorMessage = "Couldn't check for server updates: \(error.localizedDescription)"
+        }
+    }
+
+    /// Ask the server helper to update, then wait for the new version to come up.
+    func updateServer() async {
+        guard let api, isAdmin else { return }
+        serverUpdating = true
+        defer { serverUpdating = false }
+        do {
+            linksStatus = try await api.requestServerUpdate()
+        } catch {
+            errorMessage = friendly(error)
+            return
+        }
+        // Rebuilding takes a minute or two; the server is briefly offline while it restarts.
+        let before = serverVersion
+        for _ in 0..<90 {
+            try? await Task.sleep(for: .seconds(3))
+            if let status = try? await api.linksStatus() {
+                linksStatus = status
+                if status.state == "error" {
+                    errorMessage = status.message ?? "The server update failed."
+                    return
+                }
+                let finished = !status.isWorking && status.state == "done"
+                if let v = try? await api.serverVersion(), v != before || finished {
+                    serverVersion = v
+                    toast(v != before ? "Server updated to \(v)" : "Server is up to date")
+                    return
+                }
+            }
+        }
+        errorMessage = "The server update is taking a while. Check it with “homedrive status” on the server."
+    }
+
+    private static let serverSource = URL(string: "https://raw.githubusercontent.com/maxax4253/homedrive/main/server/app/main.py")!
     private static let releasesAPI = URL(string: "https://api.github.com/repos/maxax4253/homedrive/releases/latest")!
     private static let latestZip = URL(string: "https://github.com/maxax4253/homedrive/releases/latest/download/HomeDrive.zip")!
 

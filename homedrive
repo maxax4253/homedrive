@@ -116,7 +116,13 @@ case "${1:-help}" in
     ;;
   update)
     echo "Updating HomeDrive..."
-    git -C "$DIR" pull --ff-only
+    if [ "$(id -u)" -eq 0 ]; then
+      # Run git as the install's owner so root never takes over the files.
+      setpriv --reuid="${OWNER%%:*}" --regid="${OWNER##*:}" --clear-groups \
+        env HOME="$(dirname "$DIR")" git -C "$DIR" pull --ff-only
+    else
+      git -C "$DIR" pull --ff-only
+    fi
     sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive 2>/dev/null || true
     compose up -d --build
     sudo HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive install-agent >/dev/null 2>&1 || true
@@ -169,6 +175,14 @@ case "${1:-help}" in
           agent_status needs_approval "Tailscale needs your OK to make share links public. Approve it, then turn the switch on again." "$result"
         else
           agent_status error "Couldn't turn share links on: $result"
+        fi
+        ;;
+      update)
+        agent_status working "Updating the server…"
+        if out=$(HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive update 2>&1); then
+          agent_status "done" "Server updated."
+        else
+          agent_status error "Update failed: $(printf '%s\n' "$out" | tail -1)"
         fi
         ;;
       links-off)

@@ -180,6 +180,11 @@ extension APIClient {
         try await decode(LinksStatus.self, makeRequest("admin/links"))
     }
 
+    /// Ask the server helper to pull the latest HomeDrive and rebuild (admin).
+    func requestServerUpdate() async throws -> LinksStatus {
+        try await decode(LinksStatus.self, makeRequest("admin/update", method: "POST"))
+    }
+
     func setLinks(_ enabled: Bool) async throws -> LinksStatus {
         struct Body: Encodable { let enabled: Bool }
         return try await decode(LinksStatus.self, try jsonRequest("admin/links", body: Body(enabled: enabled)))

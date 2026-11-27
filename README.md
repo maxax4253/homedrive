@@ -18,10 +18,14 @@ curl -fsSL https://raw.githubusercontent.com/maxax4253/homedrive/main/install.sh
 It installs Docker and Tailscale if they're missing, asks for a username, password and storage folder, and starts HomeDrive on `http://<tailscale-ip>:8090`. Afterwards:
 
 ```bash
-homedrive status     # running? address, free space
+homedrive status     # running? address, free space, backups, links
 homedrive update     # get the latest version
 homedrive logs       # follow the server log
-homedrive password   # change the login password
+homedrive password   # change the admin password
+
+homedrive backup /mnt/backup   # nightly backups to that folder (ideally another drive)
+homedrive backup now           # back up right now
+homedrive links on             # public share links through Tailscale Funnel
 ```
 
 **Mac app:**
@@ -38,13 +42,24 @@ To build the Mac app yourself instead, you need the Xcode command line tools: `x
 
 Bump `CFBundleShortVersionString` in `mac/Info.plist` and push to `main`. GitHub Actions builds the app (Apple silicon + Intel), tags it `v<version>` and attaches `HomeDrive.zip` to a new release. Every other push that touches `mac/` just checks that the app still builds.
 
-## What it does (v0.4)
+## What it does (v0.5)
 
 **Free up space on your Mac:**
 
 - **Move to HomeDrive:** right-click files or folders in Finder, then **Services → Move to HomeDrive** (or **+ New → Move from Mac…**, ⌥⌘U). Each file is uploaded, then its SHA-256 fingerprint is compared with the copy the server wrote to disk. Only if every file matches are the originals moved to your Mac's Trash. Anything that can't be verified stays where it was.
 - **Copy to HomeDrive:** the same Finder service, but it keeps the originals.
 - The sidebar shows how much space you've freed on this Mac.
+
+**Accounts:** the admin (from setup) sees the whole drive. Add family or roommates on the **Admin** page: each person gets a private `Users/<name>` folder plus a **Shared** folder everyone can use, with an optional storage limit. Resetting someone's password signs them out everywhere.
+
+**Share links:** right-click, then **Get link…**, with an expiry (1/7/30 days or never) and an optional password. The link opens a simple download page; folders download as a zip. The public pages run as a separate, read-only server that can only serve share links, so your drive, login and API stay Tailscale-only. Turn it on with `homedrive links on` (it uses Tailscale Funnel, no router changes). Manage links on the **Shared links** page.
+
+**Backups and version history:** `homedrive backup <folder>` takes a snapshot every night at 3am. Unchanged files are hard links, so each snapshot is a full copy that only costs the space of what changed. It keeps every day for a week, weekly for a month, and monthly for 6 months. Right-click a file, then **Version history…** to download or restore an older copy from backups or from earlier edits. Restoring is undoable.
+
+**Offline and editing:**
+
+- **Make available offline** keeps a file or folder on your Mac and refreshes it every 10 minutes. See them on the **Offline** page, which works without a connection.
+- **Open in app (saves back)** opens a file in its normal app (Pages, Word, Preview…). Every time you save, the new version uploads and the previous one goes into version history. If someone changed it on the server meanwhile, yours is saved as a separate "(conflict …)" copy instead of overwriting.
 
 Google Drive-style layout:
 
@@ -77,8 +92,17 @@ Google Drive-style layout:
 | GET | `/api/starred` | starred items |
 | POST | `/api/star` | `{path, starred}` |
 | GET | `/api/thumbnail?path=&size=` | JPEG, cached |
-| POST | `/api/upload?path=` | multipart, field `files`; returns each file's on-disk `sha256` |
+| POST | `/api/upload?path=&replace=&if_modified=` | multipart, field `files`; returns each file's on-disk `sha256`. `replace` overwrites (keeping a version); `if_modified` returns 409 if the file changed |
 | GET | `/api/hash?path=` | SHA-256 and size of a stored file |
+| GET | `/api/tree?path=` | every file under a folder (offline sync) |
+| GET | `/api/versions?path=` | older copies from edits and backups |
+| GET | `/api/versions/download?path=&version=` | download one |
+| POST | `/api/versions/restore` | `{path, version}` (current copy is kept) |
+| GET/POST | `/api/backups`, `/api/backups/run` | admin |
+| GET/POST/DELETE | `/api/shares`, `/api/shares/{token}` | your share links |
+| GET/POST/DELETE | `/api/users…` | admin: add, reset password, storage limit, delete |
+| POST | `/api/me/password` | change your own password |
+| GET | `/s/{token}` | **public server only**: share-link page |
 | POST | `/api/mkdir` | `{path}` |
 | POST | `/api/move` | `{src, dst}` (also used for rename) |
 | POST | `/api/delete` | `{path}` → moves to the trash |

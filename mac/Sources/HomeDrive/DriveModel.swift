@@ -134,6 +134,7 @@ final class DriveModel {
     var checkingForUpdate = false
     var serverLatest: String?
     var serverUpdating = false
+    var checkingServerUpdate = false
 
     // Admin: people, backups and the share links switch
     var linksStatus: LinksStatus?

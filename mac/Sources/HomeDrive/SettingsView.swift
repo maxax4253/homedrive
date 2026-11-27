@@ -71,13 +71,15 @@ struct SettingsScreen: View {
                                     detail: serverDetail) {
                             if model.isAdmin {
                                 HStack(spacing: 8) {
-                                    if model.serverUpdating { ProgressView().controlSize(.small) }
+                                    if model.serverUpdating || model.checkingServerUpdate {
+                                        ProgressView().controlSize(.small)
+                                    }
                                     if model.serverUpdateAvailable && model.linksStatus?.agentInstalled != false {
                                         Button("Update server") { Task { await model.updateServer() } }
                                             .disabled(model.serverUpdating)
                                     } else {
                                         Button("Check for updates") { Task { await model.checkForServerUpdate() } }
-                                            .disabled(model.serverUpdating || model.checkingForUpdate)
+                                            .disabled(model.serverUpdating || model.checkingServerUpdate)
                                     }
                                 }
                             }
@@ -195,8 +197,8 @@ extension DriveModel {
 
     /// The newest server version is whatever is on GitHub's main branch.
     func checkForServerUpdate() async {
-        checkingForUpdate = true
-        defer { checkingForUpdate = false }
+        checkingServerUpdate = true
+        defer { checkingServerUpdate = false }
         do {
             let (data, _) = try await URLSession.shared.data(from: Self.serverSource)
             let text = String(decoding: data, as: UTF8.self)

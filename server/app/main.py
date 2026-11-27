@@ -3,12 +3,14 @@
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from . import auth, storage
+from .extras import Stars, stream_zip
 from .config import Settings, load_settings
 
 try:
@@ -40,6 +42,11 @@ class NameBody(BaseModel):
     name: str
 
 
+class StarBody(BaseModel):
+    path: str
+    starred: bool = True
+
+
 class MoveBody(BaseModel):
     src: str
     dst: str
@@ -51,7 +58,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     thumbs_dir = settings.data_dir / "thumbs"
     thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(title="HomeDrive", version="0.2.0")
+    stars = Stars(settings.data_dir)
+    app = FastAPI(title="HomeDrive", version="0.3.0")
+
+    def mark(entries: list[dict]) -> list[dict]:
+        for e in entries:
+            e["starred"] = stars.is_starred(e["path"])
+        return entries
 
     def require_user(request: Request) -> str:
         header = request.headers.get("authorization", "")
@@ -86,7 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_files(path: str = "", hidden: bool = False, user: str = Depends(require_user)):
         safe(path)
         try:
-            return {"path": path.strip("/"), "entries": storage.list_dir(root, path, hidden)}
+            return {"path": path.strip("/"), "entries": mark(storage.list_dir(root, path, hidden))}
         except FileNotFoundError:
             raise HTTPException(404, "Folder not found")
 
@@ -96,6 +109,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not p.is_file():
             raise HTTPException(404, "File not found")
         return FileResponse(p, filename=p.name)
+
+    @app.get("/api/zip")
+    def download_zip(path: list[str] = Query(...), user: str = Depends(require_user)):
+        """Zip one or more files/folders. Streams, so big folders start downloading right away."""
+        items = []
+        for rel in path:
+            p = safe(rel)
+            if p == root:
+                raise HTTPException(400, "Can't zip the whole drive")
+            if not p.exists():
+                raise HTTPException(404, f"Not found: {rel}")
+            items.append((p, p.name))
+        if len(items) == 1:
+            name = f"{items[0][0].stem if items[0][0].is_file() else items[0][0].name}.zip"
+        else:
+            name = "HomeDrive download.zip"
+        headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"}
+        return StreamingResponse(stream_zip(items), media_type="application/zip", headers=headers)
+
+    @app.get("/api/starred")
+    def starred(user: str = Depends(require_user)):
+        entries = []
+        for rel in stars.all():
+            try:
+                p = storage.resolve(root, rel)
+            except storage.PathError:
+                continue
+            if p.exists() and p != root:
+                entries.append(storage.entry(root, p))
+        entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+        return {"entries": mark(entries)}
+
+    @app.post("/api/star")
+    def star(body: StarBody, user: str = Depends(require_user)):
+        p = safe(body.path)
+        if not p.exists() or p == root:
+            raise HTTPException(404, "Not found")
+        stars.set(storage.relpath(root, p), body.starred)
+        return {"path": storage.relpath(root, p), "starred": body.starred}
 
     @app.get("/api/thumbnail")
     def thumbnail(path: str, size: int = Query(256, ge=32, le=1024), user: str = Depends(require_user)):
@@ -149,7 +201,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         safe(body.src)
         safe(body.dst)
         try:
-            return storage.entry(root, storage.move(root, body.src, body.dst))
+            moved = storage.move(root, body.src, body.dst)
+            stars.moved(body.src.strip("/"), storage.relpath(root, moved))
+            return mark([storage.entry(root, moved)])[0]
         except FileNotFoundError:
             raise HTTPException(404, "Not found")
         except FileExistsError:
@@ -159,11 +213,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/recent")
     def recent(limit: int = Query(50, ge=1, le=500), user: str = Depends(require_user)):
-        return {"entries": storage.recent(root, limit)}
+        return {"entries": mark(storage.recent(root, limit))}
 
     @app.get("/api/search")
     def search(q: str, limit: int = Query(200, ge=1, le=1000), user: str = Depends(require_user)):
-        return {"entries": storage.search(root, q, limit)}
+        return {"entries": mark(storage.search(root, q, limit))}
 
     @app.get("/api/trash")
     def trash_list(user: str = Depends(require_user)):
@@ -172,7 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/trash/restore")
     def trash_restore(body: NameBody, user: str = Depends(require_user)):
         try:
-            return storage.entry(root, storage.restore(root, body.name))
+            return mark([storage.entry(root, storage.restore(root, body.name))])[0]
         except FileNotFoundError:
             raise HTTPException(404, "Not in the trash")
         except storage.PathError as e:

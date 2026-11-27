@@ -108,8 +108,22 @@ final class APIClient {
     }
 
     /// Downloads a file and moves it to `destination` (replacing anything there).
-    func download(_ path: String, to destination: URL) async throws {
-        let (tempURL, response) = try await session.download(for: makeRequest("download", query: ["path": path]))
+    func download(_ path: String, to destination: URL, progress: @escaping ProgressHandler = { _, _ in }) async throws {
+        try await fetchFile(makeRequest("download", query: ["path": path]), to: destination, progress: progress)
+    }
+
+    /// Downloads files/folders as one zip.
+    func downloadZip(_ paths: [String], to destination: URL, progress: @escaping ProgressHandler = { _, _ in }) async throws {
+        var req = makeRequest("zip")
+        var comps = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+        comps.queryItems = paths.map { URLQueryItem(name: "path", value: $0) }
+        req.url = comps.url
+        try await fetchFile(req, to: destination, progress: progress)
+    }
+
+    private func fetchFile(_ request: URLRequest, to destination: URL, progress: @escaping ProgressHandler) async throws {
+        let (tempURL, response) = try await TransferSession.shared.download(request, progress: progress)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let data = (try? Data(contentsOf: tempURL)) ?? Data()
             try check(data, response)
@@ -118,6 +132,15 @@ final class APIClient {
         try? fm.removeItem(at: destination)
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.moveItem(at: tempURL, to: destination)
+    }
+
+    func starred() async throws -> [Entry] {
+        try await decode(EntriesResponse.self, makeRequest("starred")).entries
+    }
+
+    func setStar(_ path: String, starred: Bool) async throws {
+        struct Body: Encodable { let path: String; let starred: Bool }
+        _ = try await send(try jsonRequest("star", body: Body(path: path, starred: starred)))
     }
 
     func mkdir(_ path: String) async throws {
@@ -134,7 +157,7 @@ final class APIClient {
 
     /// Uploads one local file into `folder`. The multipart body is written to a
     /// temp file first so big files don't have to fit in memory.
-    func upload(file: URL, to folder: String) async throws {
+    func upload(file: URL, to folder: String, progress: @escaping ProgressHandler = { _, _ in }) async throws {
         let boundary = "HomeDrive-\(UUID().uuidString)"
         let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: bodyURL) }
@@ -154,7 +177,7 @@ final class APIClient {
 
         var req = makeRequest("upload", query: ["path": folder], method: "POST")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await session.upload(for: req, fromFile: bodyURL)
+        let (data, response) = try await TransferSession.shared.upload(req, fromFile: bodyURL, progress: progress)
         try check(data, response)
     }
 }

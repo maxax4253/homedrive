@@ -37,11 +37,17 @@ This builds `HomeDrive.app`, copies it to `/Applications`, and opens it. Sign in
 
 To work on the code, open `mac/Package.swift` in Xcode and press Run.
 
-## What it does (v0.2)
+## What it does (v0.3)
 
 Google Drive-style layout:
 
-- Sidebar with a **+ New** button (New folder, File upload, Folder upload), plus My Drive, Recent and Trash, with storage use at the bottom
+- Sidebar with a **+ New** button (New folder, File upload, Folder upload), plus My Drive, Recent, Starred and Trash, with storage use at the bottom
+- **Transfers popup** in the bottom-right with a progress ring for each upload/download; click a finished download to show it in Finder
+- **Sort** by clicking the Name / Last modified / File size / Date deleted headers (click again to flip)
+- **Download folders as a zip**, streamed so big folders start right away. Selecting several items with a folder among them gives one zip
+- **Drag out**: drag a file or folder from HomeDrive into Finder or onto the desktop (folders arrive as .zip)
+- **Drag to move**: drop files onto a folder, or onto a folder name in the path at the top
+- **Starred**: right-click, then Add to Starred. Stars stay attached when you rename or move things
 - **My Drive** has clickable breadcrumbs and a list/grid toggle. The list has Name / Last modified / File size columns; the grid has folder cards and file cards with photo thumbnails (including iPhone HEIC)
 - **Search in Drive** searches the whole drive, not just the current folder
 - **Trash** with Restore, Delete forever and Empty trash; restored items go back to where they were
@@ -60,6 +66,9 @@ Google Drive-style layout:
 | GET | `/api/me` | disk space |
 | GET | `/api/list?path=` | folder contents |
 | GET | `/api/download?path=` | supports Range requests |
+| GET | `/api/zip?path=&path=` | streams a zip of files/folders |
+| GET | `/api/starred` | starred items |
+| POST | `/api/star` | `{path, starred}` |
 | GET | `/api/thumbnail?path=&size=` | JPEG, cached |
 | POST | `/api/upload?path=` | multipart, field `files` |
 | POST | `/api/mkdir` | `{path}` |

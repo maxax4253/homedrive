@@ -15,6 +15,15 @@ enum Column: Hashable {
         }
     }
 
+    var sortKey: SortKey? {
+        switch self {
+        case .modified: return .modified
+        case .size: return .size
+        case .deleted: return .deleted
+        case .location, .original: return nil
+        }
+    }
+
     var width: CGFloat {
         switch self {
         case .modified, .deleted: return 150
@@ -44,20 +53,55 @@ struct TableHeader: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                Text("Name")
+                HeaderCell(title: "Name", key: .name)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 ForEach(columns, id: \.self) { column in
-                    Text(column.title)
+                    HeaderCell(title: column.title, key: column.sortKey)
                         .frame(width: column.width, alignment: .leading)
                 }
                 Color.clear.frame(width: 40)
             }
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Theme.textPrimary)
             .padding(.horizontal, 16)
             .frame(height: 44)
             Rectangle().fill(Theme.divider).frame(height: 1)
         }
+    }
+}
+
+/// Column title; click to sort by it, click again to flip the direction.
+struct HeaderCell: View {
+    @Environment(DriveModel.self) private var model
+    let title: String
+    let key: SortKey?
+
+    private var isActive: Bool { key != nil && model.sortOrder.key == key }
+
+    var body: some View {
+        if let key {
+            Button {
+                model.sort(by: key)
+            } label: {
+                label
+            }
+            .buttonStyle(.plain)
+            .help("Sort by \(title.lowercased())")
+        } else {
+            label
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            Text(title)
+            if isActive {
+                Image(systemName: model.sortOrder.ascending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(Theme.textPrimary)
+        .contentShape(Rectangle())
     }
 }
 
@@ -69,8 +113,27 @@ struct FileRow: View {
 
     private var isSelected: Bool { model.selection.contains(entry.id) }
     private var isHovered: Bool { model.hoveredID == entry.id }
+    private var isDropTarget: Bool { entry.isDir && model.dropFolderTarget == entry.path }
+    private var inTrash: Bool { model.section == .trash && model.activeSearch == nil }
 
     var body: some View {
+        if entry.isDir && !inTrash {
+            row.folderDropTarget(entry.path)
+        } else {
+            row
+        }
+    }
+
+    @ViewBuilder
+    private var row: some View {
+        if inTrash {
+            rowContent
+        } else {
+            rowContent.draggableEntry(entry)
+        }
+    }
+
+    private var rowContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 NameCell(entry: entry)
@@ -87,7 +150,12 @@ struct FileRow: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 48)
-            .background(rowBackground, in: RoundedRectangle(cornerRadius: isSelected ? 10 : 0))
+            .background(rowBackground, in: RoundedRectangle(cornerRadius: isSelected || isDropTarget ? 10 : 0))
+            .overlay {
+                if isDropTarget {
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.accent, lineWidth: 2)
+                }
+            }
             Rectangle().fill(Theme.divider).frame(height: 1)
         }
         .contentShape(Rectangle())
@@ -99,7 +167,7 @@ struct FileRow: View {
     }
 
     private var rowBackground: Color {
-        if isSelected { return Theme.rowSelected }
+        if isSelected || isDropTarget { return Theme.rowSelected }
         if isHovered { return Theme.hover }
         return .clear
     }
@@ -135,6 +203,11 @@ struct NameCell: View {
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            if entry.isStarred {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+            }
         }
         .padding(.trailing, 12)
     }
@@ -190,11 +263,18 @@ struct FolderCard: View {
                 .font(.system(size: 20))
                 .foregroundStyle(Theme.folder)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.name)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    Text(entry.name)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if entry.isStarred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
                 if model.section != .drive {
                     Text("In \(entry.locationName)")
                         .font(.system(size: 12))
@@ -209,15 +289,24 @@ struct FolderCard: View {
         .padding(.trailing, 8)
         .frame(height: 58)
         .background(background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.accent, lineWidth: 2)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture(count: 2) { Task { await model.open(entry) } }
         .simultaneousGesture(TapGesture().onEnded { Actions.select(entry, in: siblings, model: model) })
         .onHover { inside in Hover.update(model, key: entry.id, inside: inside) }
         .contextMenu { ItemMenu(items: Actions.contextItems(clicked: entry, model: model)) }
+        .draggableEntry(entry)
+        .folderDropTarget(entry.path)
     }
 
+    private var isDropTarget: Bool { model.dropFolderTarget == entry.path }
+
     private var background: Color {
-        if isSelected { return Theme.rowSelected }
+        if isSelected || isDropTarget { return Theme.rowSelected }
         if isHovered { return Theme.hover }
         return Theme.card
     }
@@ -275,6 +364,7 @@ struct FileCard: View {
         .onHover { inside in Hover.update(model, key: entry.id, inside: inside) }
         .contextMenu { ItemMenu(items: Actions.contextItems(clicked: entry, model: model)) }
         .task(id: entry.thumbKey) { await model.loadThumbnail(for: entry) }
+        .draggableEntry(entry)
     }
 
     private var background: Color {
@@ -326,8 +416,8 @@ struct ItemMenu: View {
             }
             Divider()
         }
-        if items.contains(where: { !$0.isDir }) {
-            Button("Download") { Task { await model.download(items) } }
+        Button(items.contains(where: \.isDir) ? "Download as zip" : "Download") {
+            Task { await model.download(items) }
         }
         if items.count == 1, let entry = items.first {
             Button("Rename") {
@@ -336,6 +426,10 @@ struct ItemMenu: View {
             }
         }
         if !items.isEmpty {
+            let allStarred = items.allSatisfy(\.isStarred)
+            Button(allStarred ? "Remove from Starred" : "Add to Starred") {
+                Task { await model.setStarred(items, !allStarred) }
+            }
             Divider()
             Button("Move to trash", role: .destructive) { model.deleting = items }
         }

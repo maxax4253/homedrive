@@ -18,6 +18,7 @@ struct MainView: View {
             .padding(.bottom, 16)
         }
         .background(Theme.window)
+        .overlay(alignment: .bottomTrailing) { TransfersPanel() }
         .quickLookPreview($model.previewURL)
         .task { await model.refresh() }
         .modifier(Dialogs())

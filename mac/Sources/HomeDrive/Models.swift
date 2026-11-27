@@ -12,14 +12,16 @@ struct Entry: Codable, Identifiable, Hashable {
     let trashName: String?
     let original: String?
     let deleted: Double?
+    let starred: Bool?
 
+    var isStarred: Bool { starred ?? false }
     var id: String { path }
     var thumbKey: String { "\(path)|\(modified)|\(size)" }
     var modifiedDate: Date { Date(timeIntervalSince1970: modified) }
     var deletedDate: Date? { deleted.map { Date(timeIntervalSince1970: $0) } }
 
     enum CodingKeys: String, CodingKey {
-        case name, path, size, modified, mime, original, deleted
+        case name, path, size, modified, mime, original, deleted, starred
         case isDir = "is_dir"
         case trashName = "trash_name"
     }
@@ -96,4 +98,47 @@ enum Format {
         }
         return d.formatted(.dateTime.month(.abbreviated).day().year())
     }
+}
+
+// MARK: - Transfers
+
+struct Transfer: Identifiable {
+    enum Kind { case upload, download }
+    enum State: Equatable {
+        case waiting, active, done
+        case failed(String)
+    }
+
+    let id = UUID()
+    let name: String
+    let kind: Kind
+    let isFolder: Bool
+    var state: State = .waiting
+    var bytesDone: Int64 = 0
+    var bytesTotal: Int64 = -1
+    /// For finished downloads: where the file was saved.
+    var localURL: URL?
+
+    var fraction: Double? {
+        guard bytesTotal > 0 else { return nil }
+        return min(1, Double(bytesDone) / Double(bytesTotal))
+    }
+
+    var isFinished: Bool {
+        switch state {
+        case .done, .failed: return true
+        default: return false
+        }
+    }
+}
+
+// MARK: - Sorting
+
+enum SortKey: String {
+    case name, modified, size, deleted
+}
+
+struct SortSetting: Equatable {
+    var key: SortKey
+    var ascending: Bool
 }

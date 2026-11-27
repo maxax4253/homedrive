@@ -146,3 +146,47 @@ def test_me_reports_space(env):
     client, _ = env
     body = client.get("/api/me").json()
     assert body["username"] == "max" and body["free"] > 0
+
+
+def test_zip_folder_and_multi(env):
+    import zipfile
+
+    client, files = env
+    (files / "Trip" / "day1").mkdir(parents=True)
+    (files / "Trip" / "day1" / "a.jpg").write_bytes(b"A" * 3000)
+    (files / "Trip" / "notes.txt").write_text("hi")
+    (files / "Trip" / ".DS_Store").write_text("junk")
+    (files / "solo.txt").write_text("solo")
+
+    r = client.get("/api/zip", params={"path": "Trip"})
+    assert r.status_code == 200
+    assert "Trip.zip" in r.headers["content-disposition"]
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    assert sorted(z.namelist()) == ["Trip/day1/a.jpg", "Trip/notes.txt"]
+    assert z.read("Trip/day1/a.jpg") == b"A" * 3000
+
+    r = client.get("/api/zip", params=[("path", "Trip/notes.txt"), ("path", "solo.txt")])
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    assert sorted(z.namelist()) == ["notes.txt", "solo.txt"]
+
+    assert client.get("/api/zip", params={"path": ""}).status_code == 400
+    assert client.get("/api/zip", params={"path": "../x"}).status_code == 400
+
+
+def test_starred(env):
+    client, files = env
+    (files / "Docs").mkdir()
+    (files / "Docs" / "cv.pdf").write_text("x")
+
+    assert client.post("/api/star", json={"path": "Docs/cv.pdf"}).status_code == 200
+    listed = client.get("/api/list", params={"path": "Docs"}).json()["entries"]
+    assert listed[0]["starred"] is True
+    assert [e["path"] for e in client.get("/api/starred").json()["entries"]] == ["Docs/cv.pdf"]
+
+    # Stars follow renames of the file and of folders above it.
+    client.post("/api/move", json={"src": "Docs", "dst": "Papers"})
+    assert [e["path"] for e in client.get("/api/starred").json()["entries"]] == ["Papers/cv.pdf"]
+
+    client.post("/api/star", json={"path": "Papers/cv.pdf", "starred": False})
+    assert client.get("/api/starred").json()["entries"] == []
+    assert client.post("/api/star", json={"path": "nope.txt"}).status_code == 404

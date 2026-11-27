@@ -14,6 +14,7 @@ struct ScreenSwitcher: View {
             switch model.section {
             case .drive: DriveScreen()
             case .recent: RecentScreen()
+            case .starred: StarredScreen()
             case .trash: TrashScreen()
             }
         }
@@ -50,7 +51,7 @@ struct DriveScreen: View {
         if model.entries.isEmpty && !model.isLoading {
             EmptyState(icon: "folder", title: "This folder is empty", message: "Click New or drag files and folders here to upload.")
         } else if viewMode == .list {
-            FileTable(entries: model.entries, columns: [.modified, .size])
+            FileTable(entries: model.displayEntries, columns: [.modified, .size])
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 if !model.folders.isEmpty {
@@ -76,9 +77,35 @@ struct RecentScreen: View {
             if model.entries.isEmpty && !model.isLoading {
                 EmptyState(icon: "clock", title: "No recent files", message: "Files you upload or change show up here.")
             } else if viewMode == .list {
-                FileTable(entries: model.entries, columns: [.modified, .location])
+                FileTable(entries: model.displayEntries, columns: [.modified, .location])
             } else {
-                FileGrid(files: model.entries)
+                FileGrid(files: model.displayEntries)
+            }
+        }
+    }
+}
+
+struct StarredScreen: View {
+    @Environment(DriveModel.self) private var model
+    @AppStorage("viewMode") private var viewMode: ViewMode = .list
+
+    var body: some View {
+        ListScreen(title: "Starred", toggle: $viewMode) {
+            if model.entries.isEmpty && !model.isLoading {
+                EmptyState(icon: "star", title: "No starred files", message: "Right-click a file or folder and choose Add to Starred.")
+            } else if viewMode == .list {
+                FileTable(entries: model.displayEntries, columns: [.modified, .location])
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    if !model.folders.isEmpty {
+                        SubHeader(title: "Folders")
+                        FolderGrid(folders: model.folders).padding(.bottom, 24)
+                    }
+                    if !model.files.isEmpty {
+                        SubHeader(title: "Files")
+                        FileGrid(files: model.files)
+                    }
+                }
             }
         }
     }
@@ -93,7 +120,7 @@ struct SearchScreen: View {
             if model.entries.isEmpty && !model.isLoading {
                 EmptyState(icon: "magnifyingglass", title: "No matches", message: "Try a different name.")
             } else if viewMode == .list {
-                FileTable(entries: model.entries, columns: [.modified, .location])
+                FileTable(entries: model.displayEntries, columns: [.modified, .location])
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     if !model.folders.isEmpty {
@@ -143,7 +170,7 @@ struct TrashScreen: View {
                     if model.entries.isEmpty && !model.isLoading {
                         EmptyState(icon: "trash", title: "Trash is empty", message: "Things you delete show up here.")
                     } else {
-                        FileTable(entries: model.entries, columns: [.deleted, .original])
+                        FileTable(entries: model.displayEntries, columns: [.deleted, .original])
                     }
                 }
                 .padding(.horizontal, 28)
@@ -228,15 +255,21 @@ struct CrumbButton: View {
                     .lineLimit(1)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
-                    .background(model.hoveredID == hoverKey ? Theme.hover : Color.clear, in: Capsule())
+                    .background(crumbBackground, in: Capsule())
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .onHover { inside in Hover.update(model, key: hoverKey, inside: inside) }
+            .folderDropTarget(crumb.path)
         }
     }
 
     private var hoverKey: String { "crumb:" + crumb.path }
+
+    private var crumbBackground: Color {
+        if model.dropFolderTarget == crumb.path { return Theme.rowSelected }
+        return model.hoveredID == hoverKey ? Theme.hover : Color.clear
+    }
 }
 
 /// Drive's two-segment list/grid pill with a checkmark on the active side.

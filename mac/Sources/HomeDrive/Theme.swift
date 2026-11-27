@@ -59,9 +59,13 @@ enum FileKind {
     case folder, image, video, audio, pdf, doc, sheet, slides, archive, code, text, other
 
     init(_ entry: Entry) {
-        if entry.isDir { self = .folder; return }
-        let t = entry.utType
-        let ext = entry.fileExtension
+        self.init(name: entry.name, isDir: entry.isDir)
+    }
+
+    init(name: String, isDir: Bool) {
+        if isDir { self = .folder; return }
+        let ext = (name as NSString).pathExtension.lowercased()
+        let t = UTType(filenameExtension: ext) ?? .data
         if t.conforms(to: .image) { self = .image }
         else if t.conforms(to: .movie) || t.conforms(to: .video) { self = .video }
         else if t.conforms(to: .audio) { self = .audio }

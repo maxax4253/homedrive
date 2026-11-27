@@ -3,12 +3,13 @@ import Foundation
 import Observation
 
 enum DriveSection: String, CaseIterable {
-    case drive, recent, trash
+    case drive, recent, starred, trash
 
     var title: String {
         switch self {
         case .drive: return "My Drive"
         case .recent: return "Recent"
+        case .starred: return "Starred"
         case .trash: return "Trash"
         }
     }
@@ -17,6 +18,7 @@ enum DriveSection: String, CaseIterable {
         switch self {
         case .drive: return "externaldrive"
         case .recent: return "clock"
+        case .starred: return "star"
         case .trash: return "trash"
         }
     }
@@ -72,6 +74,21 @@ final class DriveModel {
     var confirmEmptyTrash = false
     var isDropTarget = false
 
+    // Transfers (the bottom-right popup)
+    var transfers: [Transfer] = []
+    var transfersCollapsed = false
+
+    // Sorting, remembered per screen
+    private var sortOrders: [DriveSection: SortSetting] = [
+        .drive: SortSetting(key: .name, ascending: true),
+        .recent: SortSetting(key: .modified, ascending: false),
+        .starred: SortSetting(key: .name, ascending: true),
+        .trash: SortSetting(key: .deleted, ascending: false),
+    ]
+
+    // Drag and drop
+    var dropFolderTarget: String?
+
     // Thumbnails
     private(set) var thumbImages: [String: NSImage] = [:]
     private var thumbsLoading: Set<String> = []
@@ -86,9 +103,54 @@ final class DriveModel {
 
     // MARK: - Derived
 
-    var folders: [Entry] { entries.filter(\.isDir) }
-    var files: [Entry] { entries.filter { !$0.isDir } }
-    var selectedEntries: [Entry] { entries.filter { selection.contains($0.id) } }
+    /// Entries in the order the user picked (folders always first, like Drive).
+    var displayEntries: [Entry] {
+        let order = sortOrder
+        return entries.sorted { a, b in
+            if a.isDir != b.isDir { return a.isDir }
+            return Self.compare(a, b, order)
+        }
+    }
+
+    var folders: [Entry] { displayEntries.filter(\.isDir) }
+    var files: [Entry] { displayEntries.filter { !$0.isDir } }
+    var selectedEntries: [Entry] { displayEntries.filter { selection.contains($0.id) } }
+
+    var sortOrder: SortSetting {
+        let key: DriveSection = activeSearch != nil ? .drive : section
+        return sortOrders[key] ?? SortSetting(key: .name, ascending: true)
+    }
+
+    /// Click a column header: same column flips direction, new column starts in its natural order.
+    func sort(by key: SortKey) {
+        let section: DriveSection = activeSearch != nil ? .drive : self.section
+        var order = sortOrder
+        if order.key == key {
+            order.ascending.toggle()
+        } else {
+            order = SortSetting(key: key, ascending: key == .name)
+        }
+        sortOrders[section] = order
+    }
+
+    private static func compare(_ a: Entry, _ b: Entry, _ order: SortSetting) -> Bool {
+        let result: ComparisonResult
+        switch order.key {
+        case .name:
+            result = a.name.localizedStandardCompare(b.name)
+        case .modified:
+            result = a.modified == b.modified ? .orderedSame : (a.modified < b.modified ? .orderedAscending : .orderedDescending)
+        case .size:
+            result = a.size == b.size ? .orderedSame : (a.size < b.size ? .orderedAscending : .orderedDescending)
+        case .deleted:
+            let x = a.deleted ?? 0, y = b.deleted ?? 0
+            result = x == y ? .orderedSame : (x < y ? .orderedAscending : .orderedDescending)
+        }
+        if result == .orderedSame {
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        return order.ascending ? result == .orderedAscending : result == .orderedDescending
+    }
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
     var canUpload: Bool { activeSearch == nil && section == .drive }
@@ -167,6 +229,8 @@ final class DriveModel {
                     entries = try await api.list(path)
                 case .recent:
                     entries = try await api.recent(limit: 200)
+                case .starred:
+                    entries = try await api.starred()
                 case .trash:
                     entries = try await api.trash()
                 }
@@ -290,28 +354,81 @@ final class DriveModel {
         previewURL = local
     }
 
-    /// Saves files to ~/Downloads and shows them in Finder.
+    /// Saves to ~/Downloads. Files download one by one; anything with a folder in it
+    /// (or a mix) comes down as a single zip, like Drive.
     func download(_ items: [Entry]) async {
-        guard let api else { return }
+        guard let api, !items.isEmpty else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        var saved: [URL] = []
-        let fileItems = items.filter { !$0.isDir }
-        for (i, entry) in fileItems.enumerated() {
-            busyMessage = fileItems.count > 1 ? "Downloading \(i + 1) of \(fileItems.count)…" : "Downloading \(entry.name)…"
+        transfersCollapsed = false
+
+        if items.contains(where: \.isDir) {
+            let name = items.count == 1 ? "\(items[0].name).zip" : "HomeDrive download.zip"
+            let id = addTransfer(Transfer(name: name, kind: .download, isFolder: true))
+            let dest = uniqueURL(downloads.appendingPathComponent(name))
+            await runTransfer(id) { progress in
+                try await api.downloadZip(items.map(\.path), to: dest, progress: progress)
+                return dest
+            }
+            return
+        }
+
+        let ids = items.map { addTransfer(Transfer(name: $0.name, kind: .download, isFolder: false, bytesTotal: $0.size)) }
+        for (entry, id) in zip(items, ids) {
             let dest = uniqueURL(downloads.appendingPathComponent(entry.name))
-            do {
-                try await api.download(entry.path, to: dest)
-                saved.append(dest)
-            } catch {
-                errorMessage = friendly(error)
-                break
+            await runTransfer(id) { progress in
+                try await api.download(entry.path, to: dest, progress: progress)
+                return dest
             }
         }
-        busyMessage = nil
-        if items.contains(where: \.isDir) {
-            errorMessage = "Downloading whole folders isn't supported yet, so folders were skipped."
+    }
+
+    // MARK: - Transfer bookkeeping
+
+    @discardableResult
+    private func addTransfer(_ transfer: Transfer) -> UUID {
+        transfers.append(transfer)
+        return transfer.id
+    }
+
+    private func updateTransfer(_ id: UUID, _ change: (inout Transfer) -> Void) {
+        guard let i = transfers.firstIndex(where: { $0.id == id }) else { return }
+        change(&transfers[i])
+    }
+
+    /// Runs one transfer, keeping its row in the popup up to date.
+    private func runTransfer(_ id: UUID, _ work: (@escaping ProgressHandler) async throws -> URL?) async {
+        updateTransfer(id) { $0.state = .active }
+        let progress: ProgressHandler = { done, total in
+            Task { @MainActor in
+                DriveModel.shared.updateTransfer(id) { t in
+                    t.bytesDone = done
+                    if total > 0 { t.bytesTotal = total }
+                }
+            }
         }
-        if !saved.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(saved) }
+        do {
+            let url = try await work(progress)
+            updateTransfer(id) { t in
+                t.state = .done
+                t.localURL = url
+                if t.bytesTotal > 0 { t.bytesDone = t.bytesTotal }
+            }
+        } catch {
+            let message = friendly(error)
+            updateTransfer(id) { $0.state = .failed(message) }
+        }
+    }
+
+    var activeTransferCount: Int { transfers.filter { !$0.isFinished }.count }
+
+    func clearTransfers() {
+        transfers.removeAll { $0.isFinished }
+        if transfers.isEmpty { transfersCollapsed = false }
+    }
+
+    func reveal(_ transfer: Transfer) {
+        guard let url = transfer.localURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func pickFilesToUpload() {
@@ -346,28 +463,42 @@ final class DriveModel {
         showNewFolder = true
     }
 
-    /// Uploads files and folders from the Mac.
-    func upload(_ urls: [URL]) async {
+    /// Uploads files and folders from the Mac into `folder` (default: where you are).
+    func upload(_ urls: [URL], into folder: String? = nil) async {
         guard let api else { return }
-        let target = uploadTarget
+        let target = folder ?? uploadTarget
+        // Never re-upload files we just exported for a drag out of HomeDrive.
+        let toUpload = urls.filter { !$0.path.hasPrefix(dragOutDir.path) }
+        guard !toUpload.isEmpty else { return }
+
         var files: [(URL, String)] = []
         var folders: [String] = []
-        for url in urls { collect(url, into: target, files: &files, folders: &folders) }
+        for url in toUpload { collect(url, into: target, files: &files, folders: &folders) }
 
-        do {
-            for folder in folders {
-                busyMessage = "Creating folders…"
-                do { try await api.mkdir(folder) } catch let e as APIError where e.status == 409 {}
+        for newFolder in folders {
+            do { try await api.mkdir(newFolder) } catch let e as APIError where e.status == 409 {
+                _ = e // already exists, that's fine
+            } catch {
+                errorMessage = friendly(error)
+                return
             }
-            for (i, (file, folder)) in files.enumerated() {
-                busyMessage = "Uploading \(i + 1) of \(files.count): \(file.lastPathComponent)"
-                try await api.upload(file: file, to: folder)
-            }
-        } catch {
-            errorMessage = friendly(error)
         }
-        busyMessage = nil
+
+        transfersCollapsed = false
+        let ids = files.map { file, _ in
+            addTransfer(Transfer(name: file.lastPathComponent, kind: .upload, isFolder: false, bytesTotal: fileSize(file)))
+        }
+        for ((file, destination), id) in zip(files, ids) {
+            await runTransfer(id) { progress in
+                try await api.upload(file: file, to: destination, progress: progress)
+                return nil
+            }
+        }
         await refresh()
+    }
+
+    private func fileSize(_ url: URL) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? -1
     }
 
     private func collect(_ url: URL, into folder: String, files: inout [(URL, String)], folders: inout [String]) {
@@ -459,6 +590,64 @@ final class DriveModel {
         }
         selection = []
         await refresh()
+    }
+
+    // MARK: - Starred
+
+    func setStarred(_ items: [Entry], _ starred: Bool) async {
+        guard let api else { return }
+        for entry in items {
+            do {
+                try await api.setStar(entry.path, starred: starred)
+            } catch {
+                errorMessage = friendly(error)
+                break
+            }
+        }
+        await refresh()
+    }
+
+    // MARK: - Drag and drop
+
+    /// Moves dragged items into a folder ("" = top of My Drive).
+    func move(_ items: [DraggedItem], into folder: String) async {
+        guard let api else { return }
+        var moved = 0
+        for item in items {
+            let parent = (item.path as NSString).deletingLastPathComponent
+            if parent == folder || item.path == folder || folder.hasPrefix(item.path + "/") { continue }
+            do {
+                try await api.move(from: item.path, to: join(folder, item.name))
+                moved += 1
+            } catch {
+                errorMessage = friendly(error)
+                break
+            }
+        }
+        dropFolderTarget = nil
+        if moved > 0 {
+            selection = []
+            await refresh()
+        }
+    }
+
+    var dragOutDir: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("HomeDrive/DragOut", isDirectory: true)
+    }
+
+    /// Downloads an item so it can be dropped into Finder. Folders come out as a zip.
+    func exportForDrag(_ item: DraggedItem) async throws -> URL {
+        guard let api else { throw APIError(message: "Not signed in", status: 401) }
+        let dir = dragOutDir.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        if item.isDir {
+            let dest = dir.appendingPathComponent(item.name + ".zip")
+            try await api.downloadZip([item.path], to: dest)
+            return dest
+        }
+        let dest = dir.appendingPathComponent(item.name)
+        try await api.download(item.path, to: dest)
+        return dest
     }
 
     // MARK: - Thumbnails

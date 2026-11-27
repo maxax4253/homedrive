@@ -27,7 +27,20 @@ final class DriveModel {
     private(set) var busyMessage: String?
     var previewURL: URL?
 
-    let thumbnails = ThumbnailCache()
+    // UI state. Kept here instead of in @State because SwiftUI's @State needs a
+    // macro plugin that only ships with full Xcode, not the command line tools.
+    var password = ""
+    var showImporter = false
+    var showNewFolder = false
+    var newFolderName = ""
+    var renaming: Entry?
+    var renameText = ""
+    var deleting: [Entry] = []
+    var isDropTarget = false
+    private(set) var thumbImages: [String: NSImage] = [:]
+    private var thumbsLoading: Set<String> = []
+
+    static let shared = DriveModel()
 
     init() {
         if let url = URL(string: serverURL), !serverURL.isEmpty,
@@ -62,7 +75,8 @@ final class DriveModel {
 
     // MARK: - Login
 
-    func login(password: String) async {
+    func login() async {
+        let password = self.password
         var text = serverURL.trimmingCharacters(in: .whitespaces)
         if !text.hasPrefix("http://") && !text.hasPrefix("https://") { text = "http://" + text }
         while text.hasSuffix("/") { text.removeLast() }
@@ -82,6 +96,7 @@ final class DriveModel {
             UserDefaults.standard.set(username, forKey: "username")
             api = client
             isLoggedIn = true
+            self.password = ""
             path = ""
             await refresh()
         } catch {
@@ -98,7 +113,7 @@ final class DriveModel {
         backStack = []
         forwardStack = []
         storage = nil
-        thumbnails.clear()
+        thumbImages = [:]
     }
 
     // MARK: - Navigation
@@ -286,14 +301,19 @@ final class DriveModel {
         await refresh()
     }
 
-    func thumbnail(for entry: Entry) async -> NSImage? {
-        guard let api, entry.hasThumbnail else { return nil }
-        let key = "\(entry.path)|\(entry.modified)|\(entry.size)"
-        if let cached = thumbnails.image(for: key) { return cached }
+    func thumbnail(for entry: Entry) -> NSImage? {
+        thumbImages[entry.thumbKey]
+    }
+
+    func loadThumbnail(for entry: Entry) async {
+        let key = entry.thumbKey
+        guard let api, entry.hasThumbnail, thumbImages[key] == nil, !thumbsLoading.contains(key) else { return }
+        thumbsLoading.insert(key)
+        defer { thumbsLoading.remove(key) }
         guard let data = try? await api.thumbnail(entry.path, size: 256),
-              let image = NSImage(data: data) else { return nil }
-        thumbnails.store(image, for: key)
-        return image
+              let image = NSImage(data: data) else { return }
+        if thumbImages.count > 1500 { thumbImages.removeAll() }
+        thumbImages[key] = image
     }
 
     // MARK: - Helpers
@@ -339,13 +359,4 @@ final class DriveModel {
         }
         return error.localizedDescription
     }
-}
-
-/// In-memory thumbnail cache.
-final class ThumbnailCache {
-    private let cache = NSCache<NSString, NSImage>()
-    init() { cache.countLimit = 2000 }
-    func image(for key: String) -> NSImage? { cache.object(forKey: key as NSString) }
-    func store(_ image: NSImage, for key: String) { cache.setObject(image, forKey: key as NSString) }
-    func clear() { cache.removeAllObjects() }
 }

@@ -6,17 +6,11 @@ enum ViewMode: String {
     case grid, list
 }
 
+// Note: no @State anywhere. UI state lives in DriveModel so the app also builds
+// with only the Xcode command line tools.
+
 struct BrowserView: View {
     @Environment(DriveModel.self) private var model
-    @AppStorage("viewMode") private var viewMode: ViewMode = .grid
-
-    @State private var showImporter = false
-    @State private var newFolderName = ""
-    @State private var showNewFolder = false
-    @State private var renaming: Entry?
-    @State private var renameText = ""
-    @State private var deleting: [Entry] = []
-    @State private var isDropTarget = false
 
     var body: some View {
         @Bindable var model = model
@@ -24,74 +18,64 @@ struct BrowserView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200)
         } detail: {
-            VStack(spacing: 0) {
-                BreadcrumbBar()
-                Divider()
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay {
-                        if isDropTarget {
-                            RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(Color.accentColor, lineWidth: 3)
-                                .padding(6)
-                        }
-                    }
-                    .dropDestination(for: URL.self) { urls, _ in
-                        Task { await model.upload(urls) }
-                        return true
-                    } isTargeted: { isDropTarget = $0 }
-                Divider()
-                StatusBar()
-            }
-            .navigationTitle(model.folderName)
-            .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search this folder")
-            .toolbar { toolbar }
+            DetailColumn()
         }
         .quickLookPreview($model.previewURL)
         .task { await model.refresh() }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            guard case .success(let urls) = result else { return }
-            Task {
-                let started = urls.map { $0.startAccessingSecurityScopedResource() }
-                await model.upload(urls)
-                for (url, ok) in zip(urls, started) where ok { url.stopAccessingSecurityScopedResource() }
-            }
+        .modifier(BrowserDialogs())
+    }
+}
+
+struct DetailColumn: View {
+    @Environment(DriveModel.self) private var model
+    @AppStorage("viewMode") private var viewMode: ViewMode = .grid
+
+    var body: some View {
+        @Bindable var model = model
+        VStack(spacing: 0) {
+            BreadcrumbBar()
+            Divider()
+            DropArea(viewMode: viewMode)
+            Divider()
+            StatusBar()
         }
-        .alert("New Folder", isPresented: $showNewFolder) {
-            TextField("Name", text: $newFolderName)
-            Button("Create") {
-                let name = newFolderName
-                Task { await model.newFolder(named: name) }
+        .navigationTitle(model.folderName)
+        .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search this folder")
+        .toolbar { BrowserToolbar(viewMode: $viewMode) }
+    }
+}
+
+struct DropArea: View {
+    @Environment(DriveModel.self) private var model
+    let viewMode: ViewMode
+
+    var body: some View {
+        FolderContent(viewMode: viewMode)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay { dropHighlight }
+            .dropDestination(for: URL.self) { urls, _ in
+                Task { await model.upload(urls) }
+                return true
+            } isTargeted: { targeted in
+                model.isDropTarget = targeted
             }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let entry = renaming {
-                    let name = renameText
-                    Task { await model.rename(entry, to: name) }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog(
-            deleting.count == 1 ? "Move “\(deleting[0].name)” to the trash?" : "Move \(deleting.count) items to the trash?",
-            isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } })
-        ) {
-            Button("Move to Trash", role: .destructive) {
-                let items = deleting
-                Task { await model.moveToTrash(items) }
-            }
-        } message: {
-            Text("They go to the .trash folder on the server.")
-        }
     }
 
-    // MARK: - Content
-
     @ViewBuilder
-    private var content: some View {
+    private var dropHighlight: some View {
+        if model.isDropTarget {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.accentColor, lineWidth: 3)
+                .padding(6)
+        }
+    }
+}
+
+struct FolderContent: View {
+    @Environment(DriveModel.self) private var model
+    let viewMode: ViewMode
+
+    var body: some View {
         if model.entries.isEmpty && !model.isLoading {
             ContentUnavailableView {
                 Label("This folder is empty", systemImage: "folder")
@@ -99,72 +83,120 @@ struct BrowserView: View {
                 Text("Drag files here or click Upload.")
             }
         } else if viewMode == .grid {
-            gridView
+            FileGrid()
         } else {
-            listView
+            FileList()
         }
     }
+}
 
-    private var gridView: some View {
+// MARK: - Grid
+
+struct FileGrid: View {
+    @Environment(DriveModel.self) private var model
+
+    private let columns = [GridItem(.adaptive(minimum: 116, maximum: 150), spacing: 12)]
+
+    var body: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 116, maximum: 150), spacing: 12)], spacing: 14) {
+            LazyVGrid(columns: columns, spacing: 14) {
                 ForEach(model.visibleEntries) { entry in
-                    FileTile(entry: entry, isSelected: model.selection.contains(entry.id))
-                        .onTapGesture(count: 2) { Task { await model.open(entry) } }
-                        .simultaneousGesture(TapGesture().onEnded { select(entry) })
-                        .contextMenu { menu(for: contextItems(clicked: entry)) }
+                    tile(entry)
                 }
             }
             .padding(16)
         }
-        .background {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { model.selection = [] }
-        }
+        .background { backgroundTap }
         .focusable()
         .focusEffectDisabled()
-        .onKeyPress(.space) { previewSelection() }
-        .onKeyPress(.return) { openSelection() }
-        .onDeleteCommand { deleting = model.selectedEntries }
+        .onKeyPress(.space) { Actions.previewSelection(model) }
+        .onKeyPress(.return) { Actions.openSelection(model) }
+        .onDeleteCommand { model.deleting = model.selectedEntries }
     }
 
-    private var listView: some View {
+    private func tile(_ entry: Entry) -> some View {
+        FileTile(entry: entry, isSelected: model.selection.contains(entry.id))
+            .onTapGesture(count: 2) { Task { await model.open(entry) } }
+            .simultaneousGesture(TapGesture().onEnded { Actions.select(entry, in: model) })
+            .contextMenu { EntryMenu(items: Actions.contextItems(clicked: entry, in: model)) }
+    }
+
+    private var backgroundTap: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture { model.selection = [] }
+    }
+}
+
+// MARK: - List
+
+struct FileList: View {
+    @Environment(DriveModel.self) private var model
+
+    var body: some View {
         @Bindable var model = model
-        return Table(model.visibleEntries, selection: $model.selection) {
-            TableColumn("Name") { entry in
-                HStack(spacing: 8) {
-                    FileIcon(entry: entry, size: 18)
-                    Text(entry.name).lineLimit(1)
-                }
+        Table(model.visibleEntries, selection: $model.selection) {
+            TableColumn("Name") { (entry: Entry) in
+                NameCell(entry: entry)
             }
-            TableColumn("Size") { entry in
-                Text(entry.isDir ? "—" : Format.size(entry.size))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+            TableColumn("Size") { (entry: Entry) in
+                SizeCell(entry: entry)
             }
             .width(min: 70, ideal: 90, max: 120)
-            TableColumn("Modified") { entry in
-                Text(entry.modifiedDate, format: .dateTime.month(.abbreviated).day().year().hour().minute())
-                    .foregroundStyle(.secondary)
+            TableColumn("Modified") { (entry: Entry) in
+                DateCell(entry: entry)
             }
             .width(min: 120, ideal: 170, max: 220)
         }
         .contextMenu(forSelectionType: Entry.ID.self) { ids in
-            menu(for: model.entries.filter { ids.contains($0.id) })
+            EntryMenu(items: model.entries.filter { ids.contains($0.id) })
         } primaryAction: { ids in
-            if let id = ids.first, let entry = model.entries.first(where: { $0.id == id }) {
-                Task { await model.open(entry) }
-            }
+            openFirst(ids)
         }
-        .onKeyPress(.space) { previewSelection() }
-        .onDeleteCommand { deleting = model.selectedEntries }
+        .onKeyPress(.space) { Actions.previewSelection(model) }
+        .onDeleteCommand { model.deleting = model.selectedEntries }
     }
 
-    // MARK: - Toolbar & menus
+    private func openFirst(_ ids: Set<Entry.ID>) {
+        guard let id = ids.first, let entry = model.entries.first(where: { $0.id == id }) else { return }
+        Task { await model.open(entry) }
+    }
+}
 
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
+struct NameCell: View {
+    let entry: Entry
+    var body: some View {
+        HStack(spacing: 8) {
+            FileIcon(entry: entry, size: 18)
+            Text(entry.name).lineLimit(1)
+        }
+    }
+}
+
+struct SizeCell: View {
+    let entry: Entry
+    var body: some View {
+        Text(entry.isDir ? "—" : Format.size(entry.size))
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+    }
+}
+
+struct DateCell: View {
+    let entry: Entry
+    var body: some View {
+        Text(entry.modifiedDate, format: .dateTime.month(.abbreviated).day().year().hour().minute())
+            .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Toolbar, menus, dialogs
+
+struct BrowserToolbar: ToolbarContent {
+    @Environment(DriveModel.self) private var model
+    @Binding var viewMode: ViewMode
+
+    var body: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             Button { Task { await model.goBack() } } label: { Label("Back", systemImage: "chevron.left") }
                 .disabled(!model.canGoBack)
@@ -185,13 +217,13 @@ struct BrowserView: View {
             .help("Change how files are shown")
 
             Button {
-                newFolderName = "untitled folder"
-                showNewFolder = true
+                model.newFolderName = "untitled folder"
+                model.showNewFolder = true
             } label: { Label("New Folder", systemImage: "folder.badge.plus") }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .help("New folder")
 
-            Button { showImporter = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
+            Button { model.showImporter = true } label: { Label("Upload", systemImage: "square.and.arrow.up") }
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Upload files")
 
@@ -202,9 +234,13 @@ struct BrowserView: View {
             .help("Download selected files to your Downloads folder")
         }
     }
+}
 
-    @ViewBuilder
-    private func menu(for items: [Entry]) -> some View {
+struct EntryMenu: View {
+    @Environment(DriveModel.self) private var model
+    let items: [Entry]
+
+    var body: some View {
         if items.count == 1, let entry = items.first {
             Button(entry.isDir ? "Open" : "Quick Look") { Task { await model.open(entry) } }
             Divider()
@@ -214,22 +250,92 @@ struct BrowserView: View {
         }
         if items.count == 1, let entry = items.first {
             Button("Rename…") {
-                renameText = entry.name
-                renaming = entry
+                model.renameText = entry.name
+                model.renaming = entry
             }
         }
         if !items.isEmpty {
             Divider()
-            Button("Move to Trash", role: .destructive) { deleting = items }
+            Button("Move to Trash", role: .destructive) { model.deleting = items }
+        }
+    }
+}
+
+struct BrowserDialogs: ViewModifier {
+    @Environment(DriveModel.self) private var model
+
+    func body(content: Content) -> some View {
+        @Bindable var model = model
+        content
+            .fileImporter(isPresented: $model.showImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                handleImport(result)
+            }
+            .alert("New Folder", isPresented: $model.showNewFolder) {
+                TextField("Name", text: $model.newFolderName)
+                Button("Create") { createFolder() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Rename", isPresented: renameBinding) {
+                TextField("Name", text: $model.renameText)
+                Button("Rename") { rename() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .confirmationDialog(deleteTitle, isPresented: deleteBinding) {
+                Button("Move to Trash", role: .destructive) { trash() }
+            } message: {
+                Text("They go to the .trash folder on the server.")
+            }
+    }
+
+    private var renameBinding: Binding<Bool> {
+        Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })
+    }
+
+    private var deleteBinding: Binding<Bool> {
+        Binding(get: { !model.deleting.isEmpty }, set: { if !$0 { model.deleting = [] } })
+    }
+
+    private var deleteTitle: String {
+        if model.deleting.count == 1 { return "Move “\(model.deleting[0].name)” to the trash?" }
+        return "Move \(model.deleting.count) items to the trash?"
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        Task {
+            let started = urls.map { $0.startAccessingSecurityScopedResource() }
+            await model.upload(urls)
+            for (url, ok) in zip(urls, started) where ok { url.stopAccessingSecurityScopedResource() }
         }
     }
 
+    private func createFolder() {
+        let name = model.newFolderName
+        Task { await model.newFolder(named: name) }
+    }
+
+    private func rename() {
+        guard let entry = model.renaming else { return }
+        let name = model.renameText
+        Task { await model.rename(entry, to: name) }
+    }
+
+    private func trash() {
+        let items = model.deleting
+        Task { await model.moveToTrash(items) }
+    }
+}
+
+// MARK: - Selection helpers
+
+@MainActor
+enum Actions {
     /// Right-clicking a selected item acts on the whole selection, like Finder.
-    private func contextItems(clicked entry: Entry) -> [Entry] {
+    static func contextItems(clicked entry: Entry, in model: DriveModel) -> [Entry] {
         model.selection.contains(entry.id) ? model.selectedEntries : [entry]
     }
 
-    private func select(_ entry: Entry) {
+    static func select(_ entry: Entry, in model: DriveModel) {
         let flags = NSEvent.modifierFlags
         if flags.contains(.command) {
             if model.selection.contains(entry.id) {
@@ -237,18 +343,22 @@ struct BrowserView: View {
             } else {
                 model.selection.insert(entry.id)
             }
-        } else if flags.contains(.shift),
-                  let anchor = model.visibleEntries.firstIndex(where: { model.selection.contains($0.id) }),
-                  let target = model.visibleEntries.firstIndex(of: entry) {
-            let range = min(anchor, target)...max(anchor, target)
-            model.selection = Set(model.visibleEntries[range].map(\.id))
-        } else {
-            model.selection = [entry.id]
+            return
         }
+        let entries = model.visibleEntries
+        if flags.contains(.shift),
+           let anchor = entries.firstIndex(where: { model.selection.contains($0.id) }),
+           let target = entries.firstIndex(of: entry) {
+            let lo = min(anchor, target)
+            let hi = max(anchor, target)
+            model.selection = Set(entries[lo...hi].map(\.id))
+            return
+        }
+        model.selection = [entry.id]
     }
 
-    private func previewSelection() -> KeyPress.Result {
-        guard model.previewURL == nil else {
+    static func previewSelection(_ model: DriveModel) -> KeyPress.Result {
+        if model.previewURL != nil {
             model.previewURL = nil
             return .handled
         }
@@ -257,8 +367,9 @@ struct BrowserView: View {
         return .handled
     }
 
-    private func openSelection() -> KeyPress.Result {
-        guard model.selectedEntries.count == 1, let entry = model.selectedEntries.first else { return .ignored }
+    static func openSelection(_ model: DriveModel) -> KeyPress.Result {
+        let selected = model.selectedEntries
+        guard selected.count == 1, let entry = selected.first else { return .ignored }
         Task { await model.open(entry) }
         return .handled
     }
@@ -281,7 +392,7 @@ struct Sidebar: View {
             }
             if model.breadcrumbs.count > 1 {
                 Section("Current Path") {
-                    ForEach(Array(model.breadcrumbs.dropFirst().enumerated()), id: \.offset) { _, crumb in
+                    ForEach(crumbs, id: \.path) { crumb in
                         Button {
                             Task { await model.go(to: crumb.path) }
                         } label: {
@@ -293,16 +404,31 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            if let s = model.storage, s.total > 0 {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: Double(s.used), total: Double(s.total))
-                    Text("\(Format.size(s.free)) free of \(Format.size(s.total))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
+        .safeAreaInset(edge: .bottom) { StorageGauge() }
+    }
+
+    private var crumbs: [Crumb] {
+        model.breadcrumbs.dropFirst().map { Crumb(name: $0.name, path: $0.path) }
+    }
+}
+
+struct Crumb: Hashable {
+    let name: String
+    let path: String
+}
+
+struct StorageGauge: View {
+    @Environment(DriveModel.self) private var model
+
+    var body: some View {
+        if let s = model.storage, s.total > 0 {
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: Double(s.used), total: Double(s.total))
+                Text("\(Format.size(s.free)) free of \(Format.size(s.total))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .padding(12)
         }
     }
 }
@@ -313,21 +439,31 @@ struct BreadcrumbBar: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                ForEach(Array(model.breadcrumbs.enumerated()), id: \.offset) { index, crumb in
-                    if index > 0 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Button(crumb.name) { Task { await model.go(to: crumb.path) } }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(index == model.breadcrumbs.count - 1 ? Color.primary : Color.secondary)
+                ForEach(items, id: \.path) { crumb in
+                    crumbView(crumb)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
         }
         .font(.callout)
+    }
+
+    private var items: [Crumb] {
+        model.breadcrumbs.map { Crumb(name: $0.name, path: $0.path) }
+    }
+
+    @ViewBuilder
+    private func crumbView(_ crumb: Crumb) -> some View {
+        if !crumb.path.isEmpty {
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        let isLast = crumb.path == model.path
+        Button(crumb.name) { Task { await model.go(to: crumb.path) } }
+            .buttonStyle(.plain)
+            .foregroundStyle(isLast ? Color.primary : Color.secondary)
     }
 }
 
@@ -343,10 +479,7 @@ struct StatusBar: View {
                 ProgressView().controlSize(.small)
                 Text("Loading…")
             } else {
-                let count = model.visibleEntries.count
-                Text(model.selection.isEmpty
-                     ? "\(count) item\(count == 1 ? "" : "s")"
-                     : "\(model.selection.count) of \(count) selected")
+                Text(summary)
             }
             Spacer()
         }
@@ -355,47 +488,56 @@ struct StatusBar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
     }
+
+    private var summary: String {
+        let count = model.visibleEntries.count
+        if model.selection.isEmpty { return "\(count) item\(count == 1 ? "" : "s")" }
+        return "\(model.selection.count) of \(count) selected"
+    }
 }
 
 struct FileTile: View {
     @Environment(DriveModel.self) private var model
     let entry: Entry
     let isSelected: Bool
-    @State private var thumb: NSImage?
 
     var body: some View {
         VStack(spacing: 6) {
-            Group {
-                if let thumb {
-                    Image(nsImage: thumb)
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .shadow(radius: 1, y: 1)
-                } else {
-                    FileIcon(entry: entry, size: 64)
-                }
-            }
-            .frame(width: 84, height: 72)
-            .padding(4)
-            .background(isSelected ? Color.secondary.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 8))
-
-            Text(entry.name)
-                .font(.callout)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
+            preview
+                .frame(width: 84, height: 72)
+                .padding(4)
+                .background(isSelected ? Color.secondary.opacity(0.2) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            label
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .help(entry.isDir ? entry.name : "\(entry.name) — \(Format.size(entry.size))")
-        .task(id: entry) {
-            thumb = await model.thumbnail(for: entry)
+        .task(id: entry) { await model.loadThumbnail(for: entry) }
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        if let thumb = model.thumbnail(for: entry) {
+            Image(nsImage: thumb)
+                .resizable()
+                .scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .shadow(radius: 1, y: 1)
+        } else {
+            FileIcon(entry: entry, size: 64)
         }
+    }
+
+    private var label: some View {
+        Text(entry.name)
+            .font(.callout)
+            .lineLimit(2)
+            .truncationMode(.middle)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .background(isSelected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 4))
     }
 }
 

@@ -4,7 +4,7 @@ import SwiftUI
 @main
 struct HomeDriveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var model = DriveModel()
+    private let model = DriveModel.shared
 
     var body: some Scene {
         WindowGroup("HomeDrive") {

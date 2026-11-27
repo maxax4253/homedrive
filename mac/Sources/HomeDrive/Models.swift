@@ -10,6 +10,7 @@ struct Entry: Codable, Identifiable, Hashable {
     let mime: String?
 
     var id: String { path }
+    var thumbKey: String { "\(path)|\(modified)|\(size)" }
     var modifiedDate: Date { Date(timeIntervalSince1970: modified) }
 
     enum CodingKeys: String, CodingKey {

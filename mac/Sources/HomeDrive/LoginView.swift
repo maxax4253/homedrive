@@ -2,7 +2,6 @@ import SwiftUI
 
 struct LoginView: View {
     @Environment(DriveModel.self) private var model
-    @State private var password = ""
 
     var body: some View {
         @Bindable var model = model
@@ -18,7 +17,7 @@ struct LoginView: View {
             Form {
                 TextField("Server", text: $model.serverURL, prompt: Text("http://100.x.x.x:8090"))
                 TextField("Username", text: $model.username)
-                SecureField("Password", text: $password)
+                SecureField("Password", text: $model.password)
                     .onSubmit(signIn)
             }
             .formStyle(.grouped)
@@ -35,17 +34,18 @@ struct LoginView: View {
             }
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
-            .disabled(model.serverURL.isEmpty || model.username.isEmpty || password.isEmpty || model.busyMessage != nil)
+            .disabled(!canSignIn)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var canSignIn: Bool {
+        !model.serverURL.isEmpty && !model.username.isEmpty && !model.password.isEmpty && model.busyMessage == nil
+    }
+
     private func signIn() {
-        let pw = password
-        Task {
-            await model.login(password: pw)
-            if model.isLoggedIn { password = "" }
-        }
+        guard canSignIn else { return }
+        Task { await model.login() }
     }
 }

@@ -2,7 +2,7 @@
 #
 # To release: bump CFBundleShortVersionString in mac/Info.plist and push to main.
 # If there's no release for that version yet, this builds one and tags it v<version>.
-# (Pushing a v* tag yourself also works.)
+# (Pushing a v* tag yourself also works. Pushing a build-* branch only builds and checks.)
 name: Release Mac app
 
 on:

@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,11 @@ type Server struct {
 	login    *Limiter
 	devices  *Devices
 	pairing  *Pairing
+
+	// Built-in Tailscale (see tailnet.go). The public address can change while running.
+	tsMu       sync.Mutex
+	tsStatus   TailnetStatus
+	publicURLv atomic.Value // string
 
 	mu        sync.Mutex
 	stars     map[string]*Stars
@@ -210,7 +216,23 @@ func notFound(err error, msg string) error {
 	return err
 }
 
+func (srv *Server) publicURL() string {
+	s, _ := srv.publicURLv.Load().(string)
+	return s
+}
+
+func (srv *Server) setPublicURL(u string) { srv.publicURLv.Store(u) }
+
+func (srv *Server) tailnetStatus() TailnetStatus {
+	srv.tsMu.Lock()
+	defer srv.tsMu.Unlock()
+	return srv.tsStatus
+}
+
 func clientIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(realIPKey{}).(string); ok {
+		return ip
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -281,6 +303,7 @@ func (srv *Server) Routes(mux *http.ServeMux) {
 		return map[string]any{"ok": true, "name": "HomeDrive", "version": Version, "pairing": srv.cfg.RequirePairing}, nil
 	}))
 	srv.pairingRoutes(mux)
+	srv.tailnetRoutes(mux)
 	mux.HandleFunc("POST /api/login", srv.open(srv.loginHandler))
 	mux.HandleFunc("GET /api/me", a(srv.me))
 	mux.HandleFunc("POST /api/me/password", a(srv.changeMyPassword))
@@ -390,7 +413,7 @@ func (srv *Server) me(w http.ResponseWriter, r *http.Request, s *session) (any, 
 	driveUsed := srv.usage(s.user.Username, s.space.Home, false)
 	info := map[string]any{
 		"username": s.user.Username, "is_admin": s.user.IsAdmin, "quota": s.user.QuotaBytes,
-		"links_enabled": srv.cfg.PublicURL != "", "backups_enabled": false,
+		"links_enabled": srv.publicURL() != "", "backups_enabled": false,
 		"cleanup_days": srv.cfg.CleanupDays, "drive_used": driveUsed,
 	}
 	if q := s.user.QuotaBytes; q != nil && *q > 0 {
@@ -1025,10 +1048,10 @@ func (srv *Server) restoreVersion(w http.ResponseWriter, r *http.Request, s *ses
 // ---------------------------------------------------------------- share links
 
 func (srv *Server) shareURL(token string) any {
-	if srv.cfg.PublicURL == "" {
+	if srv.publicURL() == "" {
 		return nil
 	}
-	return srv.cfg.PublicURL + "/s/" + token
+	return srv.publicURL() + "/s/" + token
 }
 
 func (srv *Server) shareJSON(sh *Share, s *session) map[string]any {
@@ -1085,16 +1108,16 @@ func (srv *Server) myShares(w http.ResponseWriter, r *http.Request, s *session) 
 	for _, sh := range srv.links.ListFor(s.user.Username) {
 		out = append(out, srv.shareJSON(sh, s))
 	}
-	return map[string]any{"links_enabled": srv.cfg.PublicURL != "", "shares": out}, nil
+	return map[string]any{"links_enabled": srv.publicURL() != "", "shares": out}, nil
 }
 
 func (srv *Server) linksStatus(w http.ResponseWriter, r *http.Request, s *session) (any, error) {
 	var public any
-	if srv.cfg.PublicURL != "" {
-		public = srv.cfg.PublicURL
+	if srv.publicURL() != "" {
+		public = srv.publicURL()
 	}
 	return map[string]any{
-		"enabled": srv.cfg.PublicURL != "", "public_url": public, "agent_installed": true,
+		"enabled": srv.publicURL() != "", "public_url": public, "agent_installed": true,
 		"pending": false, "state": "idle", "message": nil, "approve_url": nil, "updated": nil,
 	}, nil
 }

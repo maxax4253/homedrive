@@ -94,6 +94,9 @@ type publicApp struct {
 // publicIP: the visitor's address. Tailscale Funnel adds it to the END of
 // X-Forwarded-For; anything before was sent by the visitor and can be faked.
 func publicIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(realIPKey{}).(string); ok {
+		return ip // came through the built-in Tailscale: headers can't be trusted
+	}
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		parts := strings.Split(fwd, ",")
 		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {

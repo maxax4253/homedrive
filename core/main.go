@@ -39,6 +39,11 @@ type Config struct {
 	PublicListen string // optional separate address for share pages only
 	// Every device must be paired with a code before it can sign in.
 	RequirePairing bool
+	// Built-in Tailscale: join the tailnet as TailscaleName, and with Funnel be
+	// reachable from anywhere (share links then use that address).
+	Tailscale     bool
+	TailscaleName string
+	Funnel        bool
 }
 
 func env(name, def string) string {
@@ -63,6 +68,9 @@ func loadConfig(args []string) (*Config, error) {
 	fsFlags.StringVar(&c.Username, "admin", env("HOMEDRIVE_USERNAME", "admin"), "admin username")
 	fsFlags.StringVar(&c.Listen, "listen", env("HOMEDRIVE_LISTEN", "127.0.0.1:8090"), "address to serve on")
 	fsFlags.StringVar(&c.PublicListen, "public-listen", env("HOMEDRIVE_PUBLIC_LISTEN", ""), "extra address serving share pages only")
+	fsFlags.BoolVar(&c.Tailscale, "tailscale", os.Getenv("HOMEDRIVE_TAILSCALE") == "1", "join Tailscale (built in, nothing to install)")
+	fsFlags.StringVar(&c.TailscaleName, "tailscale-name", env("HOMEDRIVE_TAILSCALE_NAME", "homedrive"), "this server's name on Tailscale")
+	fsFlags.BoolVar(&c.Funnel, "funnel", os.Getenv("HOMEDRIVE_FUNNEL") != "0", "with -tailscale: reachable from anywhere through Tailscale Funnel")
 	fsFlags.StringVar(&c.PublicURL, "public-url", env("HOMEDRIVE_PUBLIC_URL", ""), "public address for share links")
 	minFree := fsFlags.Float64("min-free-gb", 2, "stop uploads when the disk has less free space than this")
 	if v, err := strconv.ParseFloat(os.Getenv("HOMEDRIVE_MIN_FREE_GB"), 64); err == nil {
@@ -132,11 +140,16 @@ func NewServer(c *Config) (*Server, error) {
 	}
 	// Leftovers from an upload that was cut off by a crash.
 	_ = os.RemoveAll(filepath.Join(c.FilesRoot, uploadTmp))
-	return &Server{
+	srv := &Server{
 		cfg: c, users: users, links: links, versions: OpenVersions(c.DataDir, c.VersionsKeep),
 		login: NewLimiter(loginWindow), devices: devices, pairing: OpenPairing(c.DataDir), stars: map[string]*Stars{}, usageMap: map[string]usageEntry{},
 		measuring: map[string]bool{}, recent: map[string]recentEntry{},
-	}, nil
+	}
+	srv.setPublicURL(c.PublicURL)
+	if c.Tailscale {
+		srv.tsStatus = TailnetStatus{State: "starting"}
+	}
+	return srv, nil
 }
 
 // Handler serves the API and the share pages.
@@ -210,6 +223,10 @@ func main() {
 		fmt.Println(Version)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "status" {
+		statusCommand(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "pair-code" {
 		pairCodeCommand(os.Args[2:])
 		return
@@ -231,6 +248,12 @@ func main() {
 	}
 	log.Printf("HomeDrive %s serving %s at http://%s", Version, cfg.FilesRoot, ln.Addr())
 	servers := []*http.Server{main}
+	if cfg.Tailscale {
+		if !cfg.RequirePairing {
+			log.Fatal("Tailscale makes HomeDrive reachable from other machines, so pairing can't be turned off with it")
+		}
+		startTailnet(ctx, srv, srv.Handler())
+	}
 	if cfg.PublicListen != "" {
 		pub, pln, err := serve(ctx, cfg.PublicListen, srv.PublicHandler())
 		if err != nil {

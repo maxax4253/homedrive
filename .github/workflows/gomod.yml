@@ -1,0 +1,34 @@
+# Fetches the Go server's libraries (Tailscale) and records their exact
+# fingerprints in core/go.sum. Run it by hand from the Actions tab, or by
+# pushing to a branch named gomod-*. Download the "go-mod" result and commit it.
+name: Refresh Go libraries
+on:
+  workflow_dispatch:
+  push:
+    branches: ["gomod-*", "tailscale"]
+    paths: ["core/**", ".github/workflows/gomod.yml"]
+permissions:
+  contents: read
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Fetch and check libraries
+        run: |
+          cd core
+          go get tailscale.com@latest
+          go mod tidy
+          go mod verify
+          go vet ./...
+          go build -o /tmp/homedrive-core . && ls -lh /tmp/homedrive-core
+          head -5 go.mod
+      - uses: actions/upload-artifact@v7
+        with:
+          name: go-mod
+          path: |
+            core/go.mod
+            core/go.sum

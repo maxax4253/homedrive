@@ -14,7 +14,7 @@ else
   HD_USER=${HD_USER:-max}
   while true; do
     ask -sp "HomeDrive password: " HD_PASS; echo
-    [ -n "$HD_PASS" ] || { echo "Password can't be empty."; continue; }
+    [ "${#HD_PASS}" -ge 8 ] || { echo "Use at least 8 characters."; continue; }
     case "$HD_PASS" in *"'"*) echo "Please don't use a ' (single quote)."; continue ;; esac
     break
   done
@@ -41,7 +41,7 @@ ENV
   echo "Saved settings to .env"
 fi
 
-mkdir -p data
+mkdir -p data/links
 DOCKER="docker"
 docker info >/dev/null 2>&1 || DOCKER="sudo docker"
 PROFILE=()

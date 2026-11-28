@@ -6,9 +6,8 @@ a link points to. Everything else returns 404.
 """
 
 import html
-import threading
+import os
 import time
-from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,10 +15,10 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
 from . import auth, storage
-from .config import Settings, load_settings
-from .db import Database, verify_password
-from .extras import stream_zip, visible_files
-from .main import user_space
+from .db import verify_password
+from .extras import Limiter, stream_zip, visible_files
+from .links_db import LinksDB, signing_key
+from .main import USERS_DIR
 
 UNLOCK_SECONDS = 600
 MAX_FAILURES = 8          # wrong passwords per IP...
@@ -34,32 +33,6 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-
-
-class Limiter:
-    def __init__(self):
-        self.hits: dict[str, deque] = defaultdict(deque)
-        self.lock = threading.Lock()
-
-    def allow(self, key: str, limit: int, window: float, record: bool = True) -> bool:
-        now = time.time()
-        with self.lock:
-            if len(self.hits) > 20000:
-                # Forget visitors with nothing recent, so memory can't grow forever.
-                for k in [k for k, q in self.hits.items() if not q or q[-1] < now - FAILURE_WINDOW]:
-                    del self.hits[k]
-            q = self.hits[key]
-            while q and q[0] < now - window:
-                q.popleft()
-            if len(q) >= limit:
-                return False
-            if record:
-                q.append(now)
-            return True
-
-    def record(self, key: str) -> None:
-        with self.lock:
-            self.hits[key].append(time.time())
 
 
 def _size(n: int) -> str:
@@ -108,10 +81,18 @@ def _gone() -> HTMLResponse:
 <div class="meta">It may have expired or been turned off by the person who shared it.</div>""", 404)
 
 
-def create_public_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or load_settings()
-    db = Database(settings.data_dir / "homedrive.db")
-    limiter = Limiter()
+def create_public_app(settings=None) -> FastAPI:
+    """`settings` is only passed by the tests. In real use everything comes from two
+    environment variables, and this server is given nothing else: no accounts, no
+    login secret, no admin password. Just the files (read-only) and the links folder."""
+    if settings is not None:
+        files_root, links_dir = settings.files_root, settings.data_dir / "links"
+    else:
+        files_root = Path(os.environ.get("HOMEDRIVE_FILES", "/files")).resolve()
+        links_dir = Path(os.environ.get("HOMEDRIVE_LINKS_DATA", "/data/links"))
+    db = LinksDB(links_dir)
+    secret = signing_key(links_dir)
+    limiter = Limiter(forget_after=FAILURE_WINDOW)
     app = FastAPI(title="HomeDrive links", docs_url=None, redoc_url=None, openapi_url=None)
 
     def client_ip(request: Request) -> str:
@@ -125,13 +106,13 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
         """The share and the file it points to, or None if the link is dead."""
         if len(token) > 64 or not token.replace("-", "").replace("_", "").isalnum():
             return None
-        sh = db.get_share(token)
+        sh = db.get(token)
         if not sh or not sh.active:
             return None
-        owner = db.get_user(sh.owner)
-        if not owner:
-            return None
-        space = user_space(settings, owner.username, owner.is_admin, create=False)
+        # Same layout as the main server: the admin's space is the whole drive,
+        # everyone else's is Users/<name> plus the Shared folder.
+        home = files_root if sh.owner_is_admin else files_root / USERS_DIR / sh.owner
+        space = storage.Space(home, files_root / storage.SHARED_NAME)
         try:
             p = space.resolve(sh.path)
         except storage.PathError:
@@ -202,17 +183,17 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
             limiter.record(key)
             limiter.record(link_key)
             return password_page(sh, p, "That password isn't right.")
-        return download_page(sh, p, auth.sign_value(sh.token, settings.secret, UNLOCK_SECONDS))
+        return download_page(sh, p, auth.sign_value(sh.token, secret, UNLOCK_SECONDS))
 
     @app.get("/s/{token}/download")
-    def share_download(token: str, k: str = ""):
+    def share_download(token: str, request: Request, k: str = ""):
         found = lookup(token)
         if not found:
             return _gone()
         sh, p = found
-        if sh.has_password and not auth.check_signed_value(sh.token, k, settings.secret):
+        if sh.has_password and not auth.check_signed_value(sh.token, k, secret):
             return password_page(sh, p, "Enter the password again to download.")
-        db.count_download(sh.token)
+        db.count_download(sh.token, client_ip(request))
         if p.is_dir():
             headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(p.name + '.zip')}"}
             headers.update(SECURITY_HEADERS)

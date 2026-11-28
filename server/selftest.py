@@ -18,7 +18,9 @@ import json
 import os
 import re
 import secrets
+import shlex
 import struct
+import subprocess
 import sys
 import time
 import traceback
@@ -32,6 +34,7 @@ URL = os.environ.get("HD_URL", "").rstrip("/")
 USER = os.environ.get("HD_USER", "")
 PASSWORD = os.environ.get("HD_PASSWORD", "")
 PUBLIC = os.environ.get("HD_PUBLIC", "").rstrip("/")
+DOCKER = os.environ.get("HD_DOCKER", "docker")   # "sudo docker" if needed
 
 STAMP = time.strftime("%Y%m%d-%H%M%S")
 FOLDER = f"_selftest-{STAMP}"           # scratch folder at the top of the admin's drive
@@ -140,6 +143,15 @@ def check(name: str):
     return wrap
 
 
+def warn(name: str, why: str):
+    results.append((name, True, "warning"))
+    warnings.append((name, why))
+    print(f"  {YELLOW}!{RESET} {name}\n    {YELLOW}{why}{RESET}")
+
+
+warnings: list[tuple[str, str]] = []
+
+
 def skip(name: str, why: str):
     results.append((name, True, "skipped"))
     print(f"  {YELLOW}–{RESET} {name} {DIM}(skipped: {why}){RESET}")
@@ -203,6 +215,9 @@ def run_all() -> None:
     def _():
         ctx["admin"] = login(USER, PASSWORD)
     _()
+    if len(PASSWORD) < 8:
+        warn("admin password is long enough",
+             "Your admin password is under 8 characters. Change it with: homedrive password")
     admin: Client | None = ctx.get("admin")
     if admin:
         users_folder_existed = "Users" in entry_names(admin.get("list"))
@@ -415,6 +430,21 @@ def run_all() -> None:
             status(Client(r.json()["token"]).get("list"), 200, "new login")
         _()
 
+        @check("short passwords are refused")
+        def _():
+            r = admin.post("users", {"username": TEST_USER + "x", "password": "1234567"})
+            status(r, 400, "7-character password")
+            status(admin.post(f"users/{TEST_USER}/password", {"password": "short"}), 400, "short reset")
+        _()
+
+        @check("repeated wrong passwords pause sign-in")
+        def _():
+            for _ in range(10):
+                Client().post("login", {"username": TEST_USER, "password": "definitely-wrong"})
+            r = Client().post("login", {"username": TEST_USER, "password": "selftest-pw2"})
+            status(r, 429, "sign-in after 10 wrong passwords (even with the right one)")
+        _()
+
     print("\nShare links")
     links_on = bool(admin.get("me").json().get("links_enabled"))
     if not links_on or not PUBLIC:
@@ -451,6 +481,9 @@ def run_all() -> None:
                 r = request("GET", pub(f"/s/{ctx['open_link']['token']}/download"), timeout=30)
                 status(r, 200, "download")
                 expect(r.body == tiny_png(), "downloaded file differs")
+                mine = [s for s in admin.get("shares").json()["shares"] if s["token"] == ctx["open_link"]["token"]]
+                expect(mine and mine[0]["downloads"] >= 1, "download wasn't counted")
+                expect(mine[0].get("recent_downloads"), "download wasn't logged (time and address)")
             _()
 
             @check("password link: wrong password refused, right one works")
@@ -492,6 +525,33 @@ def run_all() -> None:
                 status(r, 404, "revoked link")
             _()
 
+    print("\nLockdown")
+    containers = docker_inspect()
+    if containers is None:
+        skip("containers are locked down", "couldn't run docker inspect")
+    else:
+        @check("main server container is locked down")
+        def _():
+            c = containers.get("homedrive")
+            expect(c, "main server container not found")
+            locked_down(c)
+        _()
+
+        if "links" in containers:
+            @check("share-link server can't see the admin password or accounts")
+            def _():
+                c = containers["links"]
+                env = {e.split("=", 1)[0] for e in c["Config"]["Env"]}
+                leaked = env & {"HOMEDRIVE_PASSWORD", "HOMEDRIVE_SECRET", "HOMEDRIVE_USERNAME"}
+                expect(not leaked, f"it has {', '.join(sorted(leaked))} (update the server)")
+                mounts = {m["Destination"]: m for m in c["Mounts"]}
+                expect(set(mounts) == {"/files", "/data/links"}, f"it can see {sorted(mounts)} (update the server)")
+                expect(not mounts["/files"]["RW"], "it can change your files (should be read-only)")
+                locked_down(c)
+            _()
+        else:
+            skip("share-link server can't see the admin password or accounts", "share links are off")
+
     print("\nServer extras")
 
     @check("backup status")
@@ -511,6 +571,28 @@ def run_all() -> None:
         expect(s["agent_installed"], "not installed: run 'sudo homedrive install-agent'")
         expect(s["state"] != "error", f"last helper job failed: {s.get('message')}")
     _()
+
+
+def docker_inspect() -> dict | None:
+    """Settings of the running HomeDrive containers, keyed by service name."""
+    try:
+        ids = subprocess.run(shlex.split(DOCKER) + ["ps", "-q", "--filter", "label=com.docker.compose.project=server"],
+                             capture_output=True, text=True, timeout=30)
+        if ids.returncode != 0 or not ids.stdout.split():
+            return None
+        out = subprocess.run(shlex.split(DOCKER) + ["inspect"] + ids.stdout.split(),
+                             capture_output=True, text=True, timeout=30)
+        return {c["Config"]["Labels"].get("com.docker.compose.service"): c for c in json.loads(out.stdout)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def locked_down(c: dict) -> None:
+    hc = c["HostConfig"]
+    expect(hc.get("ReadonlyRootfs"), "its program files can be changed (not read-only)")
+    expect("ALL" in (hc.get("CapDrop") or []), "it still has special system powers")
+    expect(any("no-new-privileges" in o for o in (hc.get("SecurityOpt") or [])), "it can gain privileges")
+    expect(c["Config"].get("User") not in ("", "root", "0"), "it runs as root")
 
 
 # ---------------------------------------------------------------- cleanup
@@ -567,6 +649,8 @@ def main() -> int:
           f" {DIM}({time.time() - started:.0f}s){RESET}")
     for name, _, detail in failed:
         print(f"  {RED}✗{RESET} {name}: {detail}")
+    for name, why in warnings:
+        print(f"  {YELLOW}!{RESET} {name}: {why}")
     return 1 if failed else 0
 
 

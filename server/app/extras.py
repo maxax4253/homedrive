@@ -3,9 +3,45 @@
 import json
 import os
 import threading
+import time
+from collections import defaultdict, deque
 import zipfile
 from pathlib import Path
 from typing import Iterator
+
+
+class Limiter:
+    """Counts recent events per key (an address, an account) in a sliding window."""
+
+    def __init__(self, forget_after: float = 3600):
+        self.hits: dict[str, deque] = defaultdict(deque)
+        self.lock = threading.Lock()
+        self.forget_after = forget_after
+
+    def allow(self, key: str, limit: int, window: float, record: bool = True) -> bool:
+        now = time.time()
+        with self.lock:
+            if len(self.hits) > 20000:
+                # Forget visitors with nothing recent, so memory can't grow forever.
+                for k in [k for k, q in self.hits.items() if not q or q[-1] < now - self.forget_after]:
+                    del self.hits[k]
+            q = self.hits[key]
+            while q and q[0] < now - window:
+                q.popleft()
+            if len(q) >= limit:
+                return False
+            if record:
+                q.append(now)
+            return True
+
+    def clear(self, key: str) -> None:
+        with self.lock:
+            self.hits.pop(key, None)
+
+    def record(self, key: str) -> None:
+        with self.lock:
+            self.hits[key].append(time.time())
+
 
 
 class Stars:

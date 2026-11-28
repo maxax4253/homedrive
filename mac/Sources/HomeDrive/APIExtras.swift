@@ -31,6 +31,8 @@ struct ShareLink: Codable, Identifiable, Hashable {
     let downloads: Int
     let active: Bool
     let url: String?
+    /// Newest first (servers before 0.8 don't send this).
+    let recentDownloads: [LinkDownload]?
 
     var id: String { token }
     var createdDate: Date { Date(timeIntervalSince1970: created) }
@@ -40,7 +42,16 @@ struct ShareLink: Codable, Identifiable, Hashable {
         case token, path, name, created, expires, downloads, active, url
         case isDir = "is_dir"
         case hasPassword = "has_password"
+        case recentDownloads = "recent_downloads"
     }
+}
+
+/// One download through a share link: when, and from which internet address.
+struct LinkDownload: Codable, Hashable {
+    let time: Double
+    let ip: String?
+
+    var date: Date { Date(timeIntervalSince1970: time) }
 }
 
 struct SharesResponse: Codable {

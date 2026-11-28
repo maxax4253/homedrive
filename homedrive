@@ -33,6 +33,8 @@ env_set() {
 }
 
 compose() {
+  # Make the share-links folder ourselves, or Docker creates it owned by root.
+  [ -d data/links ] || { mkdir -p data/links && { [ "$(id -u)" -ne 0 ] || chown "$OWNER" data/links; }; }
   local profile=()
   [ "$(env_get LINKS)" = "1" ] && profile=(--profile links)
   $DOCKER compose --env-file .env "${profile[@]}" "$@"
@@ -132,6 +134,7 @@ case "${1:-help}" in
     # End-to-end check of the running server; cleans up after itself.
     HD_URL="$(address)" HD_USER="$(env_get HOMEDRIVE_USERNAME)" HD_PASSWORD="$(env_get HOMEDRIVE_PASSWORD)" \
       HD_PUBLIC="$( [ "$(env_get LINKS)" = "1" ] && env_get PUBLIC_URL )" \
+      HD_DOCKER="$DOCKER" \
       python3 "$SERVER/selftest.py"
     ;;
   restart) compose restart ;;
@@ -205,8 +208,8 @@ case "${1:-help}" in
     if [ "$(id -u)" -ne 0 ]; then
       exec sudo HOMEDRIVE_DIR="$DIR" "$0" install-agent
     fi
-    mkdir -p "$AGENT_DIR"
-    chown "$OWNER" "$SERVER/data" "$AGENT_DIR"
+    mkdir -p "$AGENT_DIR" "$SERVER/data/links"
+    chown "$OWNER" "$SERVER/data" "$AGENT_DIR" "$SERVER/data/links"
     cat > /etc/systemd/system/homedrive-agent.path <<EOF
 [Unit]
 Description=HomeDrive helper (waits for requests from the Mac app)
@@ -255,7 +258,7 @@ EOF
     ;;
   password)
     read -rsp "New HomeDrive password: " pw < /dev/tty; echo
-    [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
+    [ "${#pw}" -ge 8 ] || { echo "Use at least 8 characters."; exit 1; }
     case "$pw" in *"'"*) echo "Please don't use a ' (single quote) in the password."; exit 1 ;; esac
     (umask 077
      grep -v '^HOMEDRIVE_PASSWORD=' .env > .env.tmp || true

@@ -102,5 +102,5 @@ def test_server_update_request(world):
     assert r.status_code == 200 and r.json()["state"] == "working"
     assert json.loads((agent / "request.json").read_text())["action"] == "update"
     assert admin.post("/api/admin/update").status_code == 409      # already busy
-    admin.post("/api/users", json={"username": "sam", "password": "pw"})
-    assert login("sam", "pw").post("/api/admin/update").status_code == 403
+    admin.post("/api/users", json={"username": "sam", "password": "sam-pass1"})
+    assert login("sam", "sam-pass1").post("/api/admin/update").status_code == 403

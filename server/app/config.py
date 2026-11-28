@@ -23,6 +23,8 @@ class Settings:
     # Public address for share links, e.g. https://server.tailnet.ts.net (empty = links off).
     public_url: str = ""
     versions_to_keep: int = 10
+    # Uploads stop when they'd leave less than this free on the server's disk.
+    min_free_bytes: int = 2 * 1024 ** 3
 
 
 UPLOAD_TMP = ".upload-tmp"
@@ -80,4 +82,5 @@ def load_settings() -> Settings:
         backup_dir=Path(backup) if backup else None,
         backup_hour=int(os.environ.get("HOMEDRIVE_BACKUP_HOUR", "3")),
         public_url=os.environ.get("HOMEDRIVE_PUBLIC_URL", "").strip().rstrip("/"),
+        min_free_bytes=int(float(os.environ.get("HOMEDRIVE_MIN_FREE_GB", "2")) * 1024 ** 3),
     )

@@ -18,10 +18,11 @@ from . import auth, storage
 from .backups import Backups
 from .config import Settings, load_settings
 from .db import Database, User
-from .extras import Stars, stream_zip
+from .extras import Limiter, Stars, stream_zip
+from .links_db import LinksDB
 from .versions import VersionStore
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 try:
     from PIL import Image, ImageOps
@@ -39,6 +40,10 @@ except ImportError:  # pragma: no cover
 THUMB_TYPES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 USERS_DIR = "Users"
 GB = 1024 ** 3
+LOGIN_FAILURES = 10        # wrong passwords allowed per account...
+LOGIN_FAILURES_PER_IP = 30 # ...and per address (Docker may show everyone as one address)...
+LOGIN_WINDOW = 15 * 60     # ...per 15 minutes, then sign-in is paused
+MAX_THUMB_SOURCE = 200 * 1024 ** 2   # don't try to make thumbnails of huge images
 
 
 class LoginBody(BaseModel):
@@ -123,6 +128,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     db = Database(settings.data_dir / "homedrive.db")
     db.ensure_admin(settings.username.strip().lower(), settings.password)
+    links = LinksDB(settings.data_dir / "links")
+    old = db.take_old_shares()
+    if old:   # links made before they moved to their own database
+        links.import_old(old)
+        db.forget_old_shares()
+    login_limits = Limiter(forget_after=LOGIN_WINDOW)
     versions = VersionStore(settings.data_dir, settings.versions_to_keep)
     backups = Backups(root, settings.backup_dir, settings.data_dir, settings.backup_hour)
     if settings.run_scheduler:
@@ -189,10 +200,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "name": "HomeDrive", "version": app.version}
 
     @app.post("/api/login")
-    def login(body: LoginBody):
-        user = db.check_login(body.username.strip().lower(), body.password)
+    def login(body: LoginBody, request: Request):
+        name = body.username.strip().lower()
+        keys = {f"user:{name}": LOGIN_FAILURES,
+                f"ip:{request.client.host if request.client else '?'}": LOGIN_FAILURES_PER_IP}
+        if not all(login_limits.allow(k, n, LOGIN_WINDOW, record=False) for k, n in keys.items()):
+            raise HTTPException(429, "Too many wrong passwords. Sign-in is paused for 15 minutes.")
+        user = db.check_login(name, body.password)
         if not user:
+            for k in keys:
+                login_limits.record(k)
             raise HTTPException(401, "Wrong username or password")
+        for k in keys:   # a successful sign-in wipes the slate clean
+            login_limits.clear(k)
         token = auth.make_token(user.username, user.token_version, settings.secret, settings.token_days)
         return {"token": token, "username": user.username, "is_admin": user.is_admin}
 
@@ -309,7 +329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = safe(s, path)
         if not p.is_file():
             raise HTTPException(404, "File not found")
-        if not HAS_PIL or p.suffix.lower() not in THUMB_TYPES:
+        if not HAS_PIL or p.suffix.lower() not in THUMB_TYPES or p.stat().st_size > MAX_THUMB_SOURCE:
             raise HTTPException(415, "No thumbnail for this file type")
         cached = thumbs_dir / f"{storage.thumb_key(p, size)}.jpg"
         if not cached.exists():
@@ -343,8 +363,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         folder = safe(s, path)
         if not folder.is_dir():
             raise HTTPException(404, "Folder not found")
+        incoming = int(request.headers.get("content-length") or 0)
+        # Never let uploads fill the disk completely: the server's system lives there too.
+        if shutil.disk_usage(folder).free - incoming < settings.min_free_bytes:
+            raise HTTPException(507, "The server's disk is almost full, so the upload was stopped.")
         if s.user.quota_bytes:
-            incoming = int(request.headers.get("content-length") or 0)
             used = usage(s.user.username, s.space.home, fresh=True)
             if used + incoming > s.user.quota_bytes:
                 raise HTTPException(413, f"Storage limit reached ({s.user.quota_bytes / GB:.1f} GB).")
@@ -405,7 +428,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             moved = storage.move(s.space, body.src, body.dst)
             new = s.space.rel(moved)
             s.stars.moved(body.src.strip("/"), new)
-            db.share_moved(s.user.username, body.src.strip("/"), new)
+            links.moved(s.user.username, body.src.strip("/"), new)
             return mark(s, [storage.entry(s.space, moved)])[0]
         except FileNotFoundError:
             raise HTTPException(404, "Not found")
@@ -528,6 +551,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "token": sh.token, "path": sh.path, "name": Path(sh.path).name, "is_dir": sh.is_dir,
             "created": sh.created, "expires": sh.expires, "has_password": sh.has_password,
             "downloads": sh.downloads, "active": sh.active and exists, "url": share_url(sh.token),
+            "recent_downloads": links.recent_downloads(sh.token, 10),
         }
 
     @app.post("/api/shares")
@@ -536,17 +560,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not p.exists() or s.space.is_top(p):
             raise HTTPException(404, "Not found")
         expires = time.time() + body.expires_days * 86400 if body.expires_days else None
-        sh = db.add_share(s.user.username, s.space.rel(p), p.is_dir(), expires, body.password or None)
+        if body.password is not None and body.password != "" and len(body.password) < 4:
+            raise HTTPException(400, "Link passwords need at least 4 characters.")
+        sh = links.add(s.user.username, s.user.is_admin, s.space.rel(p), p.is_dir(), expires, body.password or None)
         return share_json(sh, s)
 
     @app.get("/api/shares")
     def my_shares(s: Session = Depends(require)):
         return {"links_enabled": bool(settings.public_url),
-                "shares": [share_json(sh, s) for sh in db.list_shares(s.user.username)]}
+                "shares": [share_json(sh, s) for sh in links.list_for(s.user.username)]}
 
     @app.delete("/api/shares/{token}")
     def revoke_share(token: str, s: Session = Depends(require)):
-        if not db.revoke_share(token, s.user.username):
+        if not links.revoke(token, s.user.username):
             raise HTTPException(404, "Link not found")
         return Response(status_code=204)
 
@@ -651,11 +677,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if u.is_admin:
             raise HTTPException(400, "The admin account can't be deleted")
         db.delete_user(username)
+        links.revoke_all_for(username)
         stars_cache.pop(username, None)
         # Their files stay in Users/<name> for the admin to keep or delete.
         return Response(status_code=204)
 
     app.state.db = db
+    app.state.links = links
     app.state.backups = backups
     app.state.versions = versions
     return app

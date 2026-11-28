@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+MIN_PASSWORD = 8
+
+
+def check_new_password(password: str) -> None:
+    if len(password) < MIN_PASSWORD:
+        raise ValueError(f"Passwords need at least {MIN_PASSWORD} characters.")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -61,24 +67,6 @@ class User:
     token_version: int
 
 
-@dataclass
-class Share:
-    token: str
-    owner: str
-    path: str
-    is_dir: bool
-    created: float
-    expires: float | None
-    has_password: bool
-    pw_hash: str | None
-    downloads: int
-    revoked: bool
-
-    @property
-    def active(self) -> bool:
-        return not self.revoked and (self.expires is None or self.expires > time.time())
-
-
 class Database:
     def __init__(self, path: Path):
         self.conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
@@ -125,8 +113,7 @@ class Database:
     def add_user(self, username: str, password: str, is_admin: bool = False, quota_bytes: int | None = None) -> User:
         if not USERNAME_RE.match(username):
             raise ValueError("Usernames are lowercase letters, numbers, dots, dashes or underscores (max 32).")
-        if not password:
-            raise ValueError("Password can't be empty.")
+        check_new_password(password)
         if self.get_user(username):
             raise FileExistsError(username)
         self._run(
@@ -137,8 +124,7 @@ class Database:
 
     def set_password(self, username: str, password: str) -> None:
         """Also signs that user out everywhere (old tokens stop working)."""
-        if not password:
-            raise ValueError("Password can't be empty.")
+        check_new_password(password)
         self._run(
             "UPDATE users SET pw_hash = ?, token_version = token_version + 1 WHERE username = ?",
             hash_password(password), username,
@@ -149,7 +135,6 @@ class Database:
 
     def delete_user(self, username: str) -> None:
         self._run("DELETE FROM users WHERE username = ?", username)
-        self._run("UPDATE shares SET revoked = 1 WHERE owner = ?", username)
 
     def ensure_admin(self, username: str, password: str) -> None:
         """The admin comes from the server's .env; keep the DB in step with it."""
@@ -165,41 +150,15 @@ class Database:
                 hash_password(password), username,
             )
 
-    # ------------------------------------------------------------ shares
+    # ------------------------------------------------------------ old share links
 
-    @staticmethod
-    def _share(row) -> Share | None:
-        if row is None:
-            return None
-        return Share(row["token"], row["owner"], row["path"], bool(row["is_dir"]), row["created"],
-                     row["expires"], row["pw_hash"] is not None, row["pw_hash"], row["downloads"],
-                     bool(row["revoked"]))
+    def take_old_shares(self) -> list[dict]:
+        """Share links from before they moved to their own database (links.db).
+        Returns them and removes them from here, so this only happens once."""
+        rows = self._all(
+            "SELECT s.*, COALESCE(u.is_admin, 0) AS owner_is_admin FROM shares s "
+            "LEFT JOIN users u ON u.username = s.owner")
+        return [dict(r) for r in rows]
 
-    def add_share(self, owner: str, path: str, is_dir: bool, expires: float | None, password: str | None) -> Share:
-        token = secrets.token_urlsafe(24)
-        pw = hash_password(password) if password else None
-        self._run(
-            "INSERT INTO shares (token, owner, path, is_dir, created, expires, pw_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            token, owner, path, int(is_dir), time.time(), expires, pw,
-        )
-        return self.get_share(token)
-
-    def get_share(self, token: str) -> Share | None:
-        return self._share(self._one("SELECT * FROM shares WHERE token = ?", token))
-
-    def list_shares(self, owner: str) -> list[Share]:
-        rows = self._all("SELECT * FROM shares WHERE owner = ? AND revoked = 0 ORDER BY created DESC", owner)
-        return [self._share(r) for r in rows]
-
-    def revoke_share(self, token: str, owner: str) -> bool:
-        return self._run("UPDATE shares SET revoked = 1 WHERE token = ? AND owner = ?", token, owner) > 0
-
-    def count_download(self, token: str) -> None:
-        self._run("UPDATE shares SET downloads = downloads + 1 WHERE token = ?", token)
-
-    def share_moved(self, owner: str, old: str, new: str) -> None:
-        """Keep links working when the shared file (or a folder above it) is renamed or moved."""
-        for row in self._all("SELECT token, path FROM shares WHERE owner = ? AND revoked = 0", owner):
-            p = row["path"]
-            if p == old or p.startswith(old + "/"):
-                self._run("UPDATE shares SET path = ? WHERE token = ?", new + p[len(old):], row["token"])
+    def forget_old_shares(self) -> None:
+        self._run("DELETE FROM shares")

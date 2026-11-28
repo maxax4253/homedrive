@@ -44,12 +44,12 @@ def test_accounts_are_private_but_share_a_folder(world):
     admin, files, login = world["admin"], world["files"], world["login"]
     assert admin.get("/api/me").json()["is_admin"] is True
 
-    r = admin.post("/api/users", json={"username": "Mom", "password": "secret", "quota_gb": 1})
+    r = admin.post("/api/users", json={"username": "Mom", "password": "secret-pw1", "quota_gb": 1})
     assert r.status_code == 200 and r.json()["username"] == "mom"
-    assert admin.post("/api/users", json={"username": "mom", "password": "x"}).status_code == 409
+    assert admin.post("/api/users", json={"username": "mom", "password": "another-pw"}).status_code == 409
     assert admin.post("/api/users", json={"username": "bad name!", "password": "x"}).status_code == 400
 
-    mom = login("mom", "secret")
+    mom = login("mom", "secret-pw1")
     me = mom.get("/api/me").json()
     assert me["is_admin"] is False and me["total"] == 1024 ** 3
 
@@ -64,8 +64,8 @@ def test_accounts_are_private_but_share_a_folder(world):
 
     # Admin sees everything; a second user can't see Mom's private files.
     assert admin.get("/api/download", params={"path": "Users/mom/recipes.txt"}).content == b"pie"
-    admin.post("/api/users", json={"username": "sam", "password": "pw2"})
-    sam = login("sam", "pw2")
+    admin.post("/api/users", json={"username": "sam", "password": "sam-pass2"})
+    sam = login("sam", "sam-pass2")
     assert sam.get("/api/download", params={"path": "../mom/recipes.txt"}).status_code == 400
     assert sam.get("/api/download", params={"path": "Shared/../../mom/recipes.txt"}).status_code == 400
     assert sam.get("/api/download", params={"path": "Shared/family.jpg"}).content == b"img"
@@ -86,26 +86,26 @@ def test_accounts_are_private_but_share_a_folder(world):
 
 def test_quota_and_password_reset(world):
     admin, login = world["admin"], world["login"]
-    admin.post("/api/users", json={"username": "kid", "password": "a", "quota_gb": 0.000001})  # ~1 KB
-    kid = login("kid", "a")
+    admin.post("/api/users", json={"username": "kid", "password": "kid-pass-a", "quota_gb": 0.000001})  # ~1 KB
+    kid = login("kid", "kid-pass-a")
     r = kid.post("/api/upload", files=[("files", ("big.bin", b"x" * 5000))])
     assert r.status_code == 413
 
     # Resetting the password signs them out everywhere.
-    assert admin.post("/api/users/kid/password", json={"password": "b"}).status_code == 204
+    assert admin.post("/api/users/kid/password", json={"password": "kid-pass-b"}).status_code == 204
     assert kid.get("/api/me").status_code == 401
-    kid = login("kid", "b")
+    kid = login("kid", "kid-pass-b")
 
     # Changing your own password returns a fresh token.
-    r = kid.post("/api/me/password", json={"old_password": "nope", "new_password": "c"})
+    r = kid.post("/api/me/password", json={"old_password": "nope", "new_password": "kid-pass-c"})
     assert r.status_code == 401
-    r = kid.post("/api/me/password", json={"old_password": "b", "new_password": "c"})
+    r = kid.post("/api/me/password", json={"old_password": "kid-pass-b", "new_password": "kid-pass-c"})
     assert r.status_code == 200
-    login("kid", "c")
+    login("kid", "kid-pass-c")
 
     assert admin.delete("/api/users/max").status_code == 400
     assert admin.delete("/api/users/kid").status_code == 204
-    assert world["api"].post("/api/login", json={"username": "kid", "password": "c"}).status_code == 401
+    assert world["api"].post("/api/login", json={"username": "kid", "password": "kid-pass-c"}).status_code == 401
 
 
 # ---------------------------------------------------------------- versions
@@ -184,8 +184,8 @@ def test_backup_retention(tmp_path):
 
 def test_backups_admin_only_and_off_without_folder(world, tmp_path):
     admin, login = world["admin"], world["login"]
-    admin.post("/api/users", json={"username": "sam", "password": "pw"})
-    assert login("sam", "pw").get("/api/backups").status_code == 403
+    admin.post("/api/users", json={"username": "sam", "password": "sam-pass1"})
+    assert login("sam", "sam-pass1").get("/api/backups").status_code == 403
     off = Backups(tmp_path, None, tmp_path)
     assert off.enabled is False and off.run() is False
 
@@ -246,8 +246,8 @@ def test_share_link_password_and_expiry(world):
     assert "Too many wrong tries" in r.text
 
     # Expired links are dead.
-    db = world["api"].app.state.db
-    expired = db.add_share("max", "secret.txt", False, time.time() - 1, None)
+    links = world["api"].app.state.links
+    expired = links.add("max", True, "secret.txt", False, time.time() - 1, None)
     assert public.get(f"/s/{expired.token}").status_code == 404
 
 
@@ -297,5 +297,5 @@ def test_links_switch_requests(world):
     st = admin.get("/api/admin/links").json()
     assert st["state"] == "needs_approval" and st["approve_url"].startswith("https://login.tailscale.com/")
 
-    admin.post("/api/users", json={"username": "sam", "password": "pw"})
-    assert login("sam", "pw").post("/api/admin/links", json={"enabled": True}).status_code == 403
+    admin.post("/api/users", json={"username": "sam", "password": "sam-pass1"})
+    assert login("sam", "sam-pass1").post("/api/admin/links", json={"enabled": True}).status_code == 403

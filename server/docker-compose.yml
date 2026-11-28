@@ -19,21 +19,33 @@ services:
       # Docker skips ufw, so bind to the Tailscale IP only (never plain "8090:8000").
       - "${BIND_IP:?run setup.sh first}:8090:8000"
     restart: unless-stopped
+    # Locked down: can't change its own program files, gain privileges, or use
+    # special system powers. It only needs to read and write the folders above.
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
 
-  # Share-link pages only (turned on with `homedrive links on`). Files are
-  # mounted read-only, and it listens on localhost for Tailscale Funnel.
+  # Share-link pages only (turned on with `homedrive links on`). This is the only
+  # part reachable from the internet, so it gets as little as possible: the files
+  # read-only and the share-links folder. No .env (so no admin password), no
+  # accounts database, no login secret. It listens on localhost for Tailscale Funnel.
   links:
     image: homedrive-server:local
     profiles: ["links"]
     command: ["uvicorn", "app.public:create_public_app", "--factory", "--host", "0.0.0.0",
               "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
-    env_file: .env
     environment:
-      HOMEDRIVE_PUBLIC_URL: ${PUBLIC_URL:-}
+      HOMEDRIVE_FILES: /files
+      HOMEDRIVE_LINKS_DATA: /data/links
     volumes:
       - ${FILES_DIR:-~/drive}:/files:ro
-      - ./data:/data
+      - ./data/links:/data/links
     ports:
       - "127.0.0.1:8091:8000"
     depends_on: [homedrive]
     restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]

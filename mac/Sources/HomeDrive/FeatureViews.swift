@@ -124,6 +124,13 @@ struct ShareSheet: View {
                             Text(option.title).tag(option)
                         }
                     }
+                    if model.shareExpiry == .never {
+                        Label("Anyone with the link can download this until you turn it off. Pick an end date if you can.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Toggle("Require a password", isOn: $model.sharePasswordOn)
                     if model.sharePasswordOn {
                         SecureField("Password", text: $model.sharePassword)
@@ -440,6 +447,7 @@ struct LinkRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.textSecondary)
                     .frame(width: 90, alignment: .leading)
+                    .help(downloadLog)
                 HStack(spacing: 8) {
                     Button("Copy link") { copy() }
                         .help(link.url == nil ? "Turn on share links in Settings first" : "Copy the link to send to someone")
@@ -476,7 +484,19 @@ struct LinkRow: View {
     private var subtitle: String {
         if !link.active { return "Not working: the file was moved out of reach or deleted" }
         if link.url == nil { return "Created \(Format.date(link.createdDate)) · waiting for share links to be turned on" }
+        if let last = link.recentDownloads?.first {
+            return "Created \(Format.date(link.createdDate)) · last downloaded \(last.date.formatted(.relative(presentation: .named)))"
+        }
         return "Created \(Format.date(link.createdDate))"
+    }
+
+    /// Hover the download count to see who downloaded it and when.
+    private var downloadLog: String {
+        guard let log = link.recentDownloads, !log.isEmpty else { return "Nobody has downloaded this yet" }
+        let lines = log.map { d in
+            "\(d.date.formatted(date: .abbreviated, time: .shortened)) · \(d.ip ?? "unknown address")"
+        }
+        return "Recent downloads:\n" + lines.joined(separator: "\n")
     }
 
     private var expiry: String {

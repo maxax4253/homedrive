@@ -145,6 +145,28 @@ extension DriveModel {
         }
     }
 
+    /// Called while the sign-in form is filled in: does this server want a pairing
+    /// code from this Mac? Then the code box shows up front.
+    func checkServerPairing() async {
+        let text = Self.normalizedServer(serverURL)
+        guard !serverURL.trimmingCharacters(in: .whitespaces).isEmpty,
+              let url = URL(string: text + "/api/health"), url.host != nil else {
+            needsPairingCode = false
+            return
+        }
+        if !username.isEmpty,
+           TokenStore.load(account: TokenStore.deviceAccount(server: text, user: username)) != nil {
+            needsPairingCode = false   // already paired with this server
+            return
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let info = try? JSONDecoder().decode(ServerInfo.self, from: data) else { return }
+        if !Task.isCancelled { needsPairingCode = info.pairing == true }
+    }
+
     func forgetDeviceKey() {
         TokenStore.delete(account: TokenStore.deviceAccount(server: serverURL, user: username))
     }

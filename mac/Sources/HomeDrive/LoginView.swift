@@ -15,7 +15,7 @@ struct LoginView: View {
                 .foregroundStyle(.secondary)
 
             Form {
-                TextField("Server", text: $model.serverURL, prompt: Text("http://100.x.x.x:8090"))
+                TextField("Server", text: $model.serverURL, prompt: Text("https://homedrive.….ts.net"))
                 TextField("Username", text: $model.username)
                 SecureField("Password", text: $model.password)
                     .onSubmit(signIn)
@@ -41,7 +41,14 @@ struct LoginView: View {
             .disabled(!canSignIn)
 
             if model.needsPairingCode {
-                Text("Get a code on a device that's already signed in (Settings → Devices), or on the server computer.")
+                if let note = model.pairingNote {
+                    Text(note)
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
+                }
+                Text("New device? Get a 6-digit code on the server computer (HomeDrive in the menu bar), or on a device that's already signed in (Settings → Devices).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -50,11 +57,18 @@ struct LoginView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Check the server as its address is typed (after a short pause).
+        .task(id: model.serverURL + "\n" + model.username) {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            await model.checkServerPairing()
+        }
     }
 
     private var canSignIn: Bool {
         !model.serverURL.isEmpty && !model.username.isEmpty && !model.password.isEmpty && model.busyMessage == nil
-            && [0, 6].contains(PairingCode.clean(model.pairingCode).count)
+            && (model.needsPairingCode ? PairingCode.clean(model.pairingCode).count == 6
+                                       : [0, 6].contains(PairingCode.clean(model.pairingCode).count))
     }
 
     private func signIn() {

@@ -156,3 +156,12 @@ final class OfflineFolderTests: XCTestCase {
         XCTAssertFalse(OfflineFolder.mayClaimMain(hasOwnState: true, ownItemsInMain: false, otherStates: 1, mainFolderHasFiles: true))
     }
 }
+
+final class ServerAddressTests: XCTestCase {
+    @MainActor func testServerAddressIsTidied() {
+        XCTAssertEqual(DriveModel.normalizedServer(" homedrive.tail92b8fb.ts.net/ "), "https://homedrive.tail92b8fb.ts.net")
+        XCTAssertEqual(DriveModel.normalizedServer("100.92.202.70:8090"), "http://100.92.202.70:8090")
+        XCTAssertEqual(DriveModel.normalizedServer("https://x.ts.net//"), "https://x.ts.net")
+        XCTAssertEqual(DriveModel.normalizedServer("http://100.92.202.70:8090"), "http://100.92.202.70:8090")
+    }
+}

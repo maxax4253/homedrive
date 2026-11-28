@@ -91,7 +91,7 @@ jobs:
           APP="/tmp/out/HomeDrive Server.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           lipo -create -output "$APP/Contents/MacOS/homedrive-server" /tmp/hd-arm64 /tmp/hd-amd64
-          iconutil -c icns ../mac/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+          iconutil -c icns packaging/ServerIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
           sed "s/__VERSION__/$V/g" packaging/Info.plist > "$APP/Contents/Info.plist"
           plutil -lint "$APP/Contents/Info.plist"
           codesign --force --deep --sign - "$APP"   # ad-hoc (free) signature

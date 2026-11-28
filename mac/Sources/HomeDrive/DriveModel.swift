@@ -53,6 +53,8 @@ final class DriveModel {
     /// Shown on the sign-in screen when the server wants this Mac paired first.
     var pairingCode = ""
     var needsPairingCode = false
+    /// A short note under the pairing box (e.g. this Mac was removed), instead of a popup.
+    var pairingNote: String?
     private(set) var isLoggedIn = false
     private(set) var api: APIClient?
 
@@ -257,10 +259,18 @@ final class DriveModel {
 
     // MARK: - Login
 
-    func login() async {
-        var text = serverURL.trimmingCharacters(in: .whitespaces)
-        if !text.hasPrefix("http://") && !text.hasPrefix("https://") { text = "http://" + text }
+    /// "homedrive.x.ts.net/" -> "https://homedrive.x.ts.net"; a bare 100.x address gets http.
+    nonisolated static func normalizedServer(_ typed: String) -> String {
+        var text = typed.trimmingCharacters(in: .whitespaces)
+        if !text.hasPrefix("http://") && !text.hasPrefix("https://") {
+            text = (text.contains(".ts.net") ? "https://" : "http://") + text
+        }
         while text.hasSuffix("/") { text.removeLast() }
+        return text
+    }
+
+    func login() async {
+        let text = Self.normalizedServer(serverURL)
         guard let url = URL(string: text) else {
             errorMessage = "That server address doesn't look right."
             return
@@ -282,8 +292,7 @@ final class DriveModel {
                 result = LoginResponse(token: paired.token, username: paired.username)
             } else {
                 if client.deviceKey == nil, let info = try? await client.serverInfo(), info.pairing == true {
-                    needsPairingCode = true
-                    errorMessage = "This Mac needs to be paired with your HomeDrive first. Enter the 6-digit pairing code."
+                    needsPairingCode = true   // the code box appears; Sign In waits for it
                     return
                 }
                 result = try await client.login(username: username, password: password)
@@ -292,6 +301,7 @@ final class DriveModel {
             TokenStore.save(result.token, account: text)
             needsPairingCode = false
             pairingCode = ""
+            pairingNote = nil
             UserDefaults.standard.set(text, forKey: "serverURL")
             UserDefaults.standard.set(username, forKey: "username")
             api = client
@@ -306,7 +316,11 @@ final class DriveModel {
         } catch let error as APIError where error.needsPairing {
             TokenStore.delete(account: deviceAccount)   // removed on the server: pair again
             needsPairingCode = true
-            errorMessage = code.isEmpty ? "This Mac needs to be paired with your HomeDrive. Enter the 6-digit pairing code." : error.message
+            if code.isEmpty {
+                pairingNote = "This Mac isn't paired with this HomeDrive anymore. Enter a new pairing code."
+            } else {
+                errorMessage = error.message
+            }
         } catch {
             errorMessage = friendly(error)
         }
@@ -341,7 +355,7 @@ final class DriveModel {
             forgetDeviceKey()
             logout()
             needsPairingCode = true
-            errorMessage = "This Mac was removed from your HomeDrive. Get a new pairing code to use it again."
+            pairingNote = "This Mac was removed from your HomeDrive. Enter a new pairing code to use it again."
             return
         }
         guard api.status == 401 else { return }

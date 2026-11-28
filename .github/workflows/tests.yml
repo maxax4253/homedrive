@@ -138,4 +138,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Shellcheck
-        run: shellcheck -S warning install.sh install-mac.sh homedrive server/setup.sh mac/build-app.sh
+        run: shellcheck -S warning install.sh install-mac.sh install-server-mac.sh uninstall-mac.sh homedrive server/setup.sh mac/build-app.sh

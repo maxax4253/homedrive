@@ -15,8 +15,13 @@ APP="/Applications/HomeDrive.app"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Downloading the latest HomeDrive..."
-if curl -fsSL -o "$tmp/HomeDrive.zip" "https://github.com/$REPO/releases/latest/download/HomeDrive.zip"; then
+# The newest Mac app release (tagged v<version>; server releases are server-v*).
+url=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null |
+  grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(https:[^"]*\)"$/\1/' |
+  grep '/download/v[0-9][^/]*/HomeDrive\.zip$' | head -1 || true)
+
+echo "Downloading the latest HomeDrive app..."
+if [ -n "$url" ] && curl -fsSL -o "$tmp/HomeDrive.zip" "$url"; then
   ditto -x -k "$tmp/HomeDrive.zip" "$tmp"
   osascript -e 'quit app "HomeDrive"' >/dev/null 2>&1 || true
   rm -rf "$APP"
@@ -26,7 +31,7 @@ if curl -fsSL -o "$tmp/HomeDrive.zip" "https://github.com/$REPO/releases/latest/
   # Register the Finder "Move to HomeDrive" service.
   /System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
   echo "Installed to $APP"
-  open "$APP"
+  [ -n "${NO_OPEN:-}" ] || open "$APP"
 else
   echo "No release found, building from source instead (needs: xcode-select --install)."
   git clone --depth 1 "https://github.com/$REPO.git" "$tmp/src"

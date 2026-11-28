@@ -36,6 +36,18 @@ curl -fsSL https://raw.githubusercontent.com/maxax4253/homedrive/main/install-ma
 
 It downloads the latest build from GitHub Releases (Apple silicon and Intel) into `/Applications`. Sign in with the address from `homedrive url`.
 
+**New (test build): make a Mac your HomeDrive, no Docker or Terminal setup.** Installs HomeDrive Server (menu bar) and the app, then opens a setup page:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxax4253/homedrive/main/install-server-mac.sh | bash
+```
+
+To remove HomeDrive from a Mac (your files are kept):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxax4253/homedrive/main/uninstall-mac.sh | bash
+```
+
 To build the Mac app yourself instead, you need the Xcode command line tools: `xcode-select --install`, then `mac/build-app.sh`. To work on the code, open `mac/Package.swift` in Xcode.
 
 ### Releasing a new Mac build

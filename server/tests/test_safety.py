@@ -29,7 +29,7 @@ def test_public_server_runs_on_files_and_links_folder_only(world, tmp_path, monk
     assert "homedrive.db" not in names and "secret.key" not in names
     db = sqlite3.connect(settings.data_dir / "links" / "links.db")
     tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert tables == {"shares", "downloads"}
+    assert tables == {"shares", "downloads", "failures"}   # no users table
 
 
 def test_old_links_move_to_the_links_database(tmp_path):
@@ -78,14 +78,34 @@ def test_login_lockout(world):
 
 
 def test_password_rules(world):
+    # Short passwords are allowed (the app warns about them); empty ones aren't.
     admin = world["admin"]
-    r = admin.post("/api/users", json={"username": "shorty", "password": "1234567"})
-    assert r.status_code == 400 and "8 characters" in r.json()["detail"]
-    assert admin.post("/api/users", json={"username": "okay", "password": "12345678"}).status_code == 200
-    assert admin.post("/api/users/okay/password", json={"password": "short"}).status_code == 400
+    assert admin.post("/api/users", json={"username": "shorty", "password": "1234"}).status_code == 200
+    assert admin.post("/api/users", json={"username": "empty", "password": ""}).status_code == 400
+    assert admin.post("/api/users/shorty/password", json={"password": ""}).status_code == 400
     world["files"].joinpath("f.txt").write_text("x")
-    r = admin.post("/api/shares", json={"path": "f.txt", "password": "ab"})
-    assert r.status_code == 400
+    assert admin.post("/api/shares", json={"path": "f.txt", "password": "ab"}).status_code == 200
+
+
+def test_link_pauses_after_ten_wrong_passwords_then_reopens(world):
+    import app.links_db as ldb
+    admin, public, files = world["admin"], world["public"], world["files"]
+    files.joinpath("s.txt").write_text("secret")
+    link = admin.post("/api/shares", json={"path": "s.txt", "password": "right-one"}).json()
+    t = link["token"]
+    for i in range(10):   # ten different visitors, one guess each
+        r = public.post(f"/s/{t}", data={"password": "nope"}, headers={"x-forwarded-for": f"203.0.113.{i}"})
+        assert "isn&#x27;t right" in r.text
+    r = public.post(f"/s/{t}", data={"password": "right-one"}, headers={"x-forwarded-for": "198.51.100.1"})
+    assert "Too many wrong tries" in r.text
+    # The app shows the link is paused, and until when.
+    assert admin.get("/api/shares").json()["shares"][0]["locked_until"] > time.time()
+    # 15 minutes later it opens again by itself.
+    links = world["api"].app.state.links
+    with links.lock:
+        links.conn.execute("UPDATE failures SET time = time - ?", (ldb.LINK_LOCK_SECONDS + 1,))
+    r = public.post(f"/s/{t}", data={"password": "right-one"}, headers={"x-forwarded-for": "198.51.100.1"})
+    assert "Download" in r.text and "Too many" not in r.text
 
 
 def test_upload_stops_before_the_disk_is_full(world):

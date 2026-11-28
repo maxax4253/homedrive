@@ -33,6 +33,8 @@ struct ShareLink: Codable, Identifiable, Hashable {
     let url: String?
     /// Newest first (servers before 0.8 don't send this).
     let recentDownloads: [LinkDownload]?
+    /// Set while the link is paused after too many wrong passwords.
+    let lockedUntil: Double?
 
     var id: String { token }
     var createdDate: Date { Date(timeIntervalSince1970: created) }
@@ -43,6 +45,7 @@ struct ShareLink: Codable, Identifiable, Hashable {
         case isDir = "is_dir"
         case hasPassword = "has_password"
         case recentDownloads = "recent_downloads"
+        case lockedUntil = "locked_until"
     }
 }
 

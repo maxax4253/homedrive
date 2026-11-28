@@ -17,7 +17,7 @@ struct FeatureSheets: ViewModifier {
                 Button("Reset") { Task { await model.resetPassword() } }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("They'll be signed out and need the new password to sign in.")
+                Text("They'll be signed out and need the new password to sign in. 8+ characters is strongly recommended.")
             }
             .alert("Storage limit", isPresented: quotaBinding) {
                 TextField("GB (empty = no limit)", text: $model.quotaText)
@@ -134,6 +134,7 @@ struct ShareSheet: View {
                     Toggle("Require a password", isOn: $model.sharePasswordOn)
                     if model.sharePasswordOn {
                         SecureField("Password", text: $model.sharePassword)
+                        PasswordHint(password: model.sharePassword)
                     }
                 }
                 .formStyle(.grouped)
@@ -275,6 +276,7 @@ struct AddUserSheet: View {
             Form {
                 TextField("Username", text: $model.newUsername, prompt: Text("e.g. mom"))
                 SecureField("Password", text: $model.newUserPassword)
+                PasswordHint(password: model.newUserPassword)
                 TextField("Storage limit (GB)", text: $model.newUserQuota, prompt: Text("Leave empty for no limit"))
             }
             .formStyle(.grouped)
@@ -304,6 +306,7 @@ struct ChangePasswordSheet: View {
             Form {
                 SecureField("Current password", text: $model.oldPassword)
                 SecureField("New password", text: $model.newPassword)
+                PasswordHint(password: model.newPassword)
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
@@ -483,6 +486,10 @@ struct LinkRow: View {
 
     private var subtitle: String {
         if !link.active { return "Not working: the file was moved out of reach or deleted" }
+        if let until = link.lockedUntil, until > Date().timeIntervalSince1970 {
+            let time = Date(timeIntervalSince1970: until).formatted(date: .omitted, time: .shortened)
+            return "Paused after too many wrong passwords · opens again at \(time)"
+        }
         if link.url == nil { return "Created \(Format.date(link.createdDate)) · waiting for share links to be turned on" }
         if let last = link.recentDownloads?.first {
             return "Created \(Format.date(link.createdDate)) · last downloaded \(last.date.formatted(.relative(presentation: .named)))"
@@ -856,5 +863,21 @@ struct LinksSwitch: View {
 
     private var toggleBinding: Binding<Bool> {
         Binding(get: { isOn }, set: { on in Task { await model.setLinksEnabled(on) } })
+    }
+}
+
+
+/// Short passwords are allowed, but we say clearly that they're a bad idea.
+struct PasswordHint: View {
+    let password: String
+
+    var body: some View {
+        if !password.isEmpty && password.count < 8 {
+            Label("Short passwords are easy to guess. 8+ characters is strongly recommended.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

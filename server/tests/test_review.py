@@ -29,7 +29,7 @@ def test_faked_forwarded_for_does_not_dodge_the_lockout(world):
     admin, public, files = world["admin"], world["public"], world["files"]
     (files / "s.txt").write_text("x")
     t = admin.post("/api/shares", json={"path": "s.txt", "password": "right"}).json()["token"]
-    for i in range(10):
+    for i in range(11):
         # A visitor rotating the first X-Forwarded-For entry; Funnel adds the real one last.
         r = public.post(f"/s/{t}", data={"password": "guess"},
                         headers={"x-forwarded-for": f"10.0.0.{i}, 203.0.113.7"})
@@ -40,7 +40,7 @@ def test_link_wide_lockout_across_many_addresses(world):
     admin, public, files = world["admin"], world["public"], world["files"]
     (files / "s.txt").write_text("x")
     t = admin.post("/api/shares", json={"path": "s.txt", "password": "right"}).json()["token"]
-    for i in range(31):
+    for i in range(11):
         r = public.post(f"/s/{t}", data={"password": "guess"}, headers={"x-forwarded-for": f"198.51.100.{i}"})
     assert "Too many wrong tries" in r.text
 

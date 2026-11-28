@@ -14,7 +14,12 @@ else
   HD_USER=${HD_USER:-max}
   while true; do
     ask -sp "HomeDrive password: " HD_PASS; echo
-    [ "${#HD_PASS}" -ge 8 ] || { echo "Use at least 8 characters."; continue; }
+    [ -n "$HD_PASS" ] || { echo "Password can't be empty."; continue; }
+    if [ "${#HD_PASS}" -lt 8 ]; then
+      echo "That's short and easy to guess. 8+ characters is strongly recommended."
+      ok=""; ask -p "Use it anyway? [y/N] " ok
+      case "$ok" in y|Y|yes) ;; *) continue ;; esac
+    fi
     case "$HD_PASS" in *"'"*) echo "Please don't use a ' (single quote)."; continue ;; esac
     break
   done

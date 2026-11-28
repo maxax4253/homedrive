@@ -11,12 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
-MIN_PASSWORD = 8
+RECOMMENDED_PASSWORD = 8   # shorter passwords are allowed, but the app and setup warn about them
 
 
 def check_new_password(password: str) -> None:
-    if len(password) < MIN_PASSWORD:
-        raise ValueError(f"Passwords need at least {MIN_PASSWORD} characters.")
+    if not password:
+        raise ValueError("Password can't be empty.")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (

@@ -258,7 +258,12 @@ EOF
     ;;
   password)
     read -rsp "New HomeDrive password: " pw < /dev/tty; echo
-    [ "${#pw}" -ge 8 ] || { echo "Use at least 8 characters."; exit 1; }
+    [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
+    if [ "${#pw}" -lt 8 ]; then
+      echo "That's short and easy to guess. 8+ characters is strongly recommended."
+      read -rp "Use it anyway? [y/N] " ok < /dev/tty
+      case "$ok" in y|Y|yes) ;; *) echo "Not changed."; exit 1 ;; esac
+    fi
     case "$pw" in *"'"*) echo "Please don't use a ' (single quote) in the password."; exit 1 ;; esac
     (umask 077
      grep -v '^HOMEDRIVE_PASSWORD=' .env > .env.tmp || true

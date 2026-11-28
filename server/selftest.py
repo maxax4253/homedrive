@@ -430,11 +430,10 @@ def run_all() -> None:
             status(Client(r.json()["token"]).get("list"), 200, "new login")
         _()
 
-        @check("short passwords are refused")
+        @check("empty passwords are refused")
         def _():
-            r = admin.post("users", {"username": TEST_USER + "x", "password": "1234567"})
-            status(r, 400, "7-character password")
-            status(admin.post(f"users/{TEST_USER}/password", {"password": "short"}), 400, "short reset")
+            status(admin.post("users", {"username": TEST_USER + "x", "password": ""}), 400, "empty password")
+            status(admin.post(f"users/{TEST_USER}/password", {"password": ""}), 400, "empty reset")
         _()
 
         @check("repeated wrong passwords pause sign-in")
@@ -517,10 +516,25 @@ def run_all() -> None:
                     expect(r.status == 404, f"{path} gave HTTP {r.status}")
             _()
 
+            @check("a link pauses after 10 wrong passwords")
+            def _():
+                r = admin.post("shares", {"path": f"{FOLDER}/notes.txt", "expires_days": 1, "password": "selftest-link"})
+                status(r, 200, "create link")
+                ctx["lock_link"] = r.json()
+                t = ctx["lock_link"]["token"]
+                for _ in range(10):
+                    form(pub(f"/s/{t}"), {"password": "wrong"})
+                r = form(pub(f"/s/{t}"), {"password": "selftest-link"})
+                expect("Too many wrong tries" in r.text, "the link still accepted passwords after 10 wrong ones")
+                mine = [s for s in admin.get("shares").json()["shares"] if s["token"] == t]
+                expect(mine and mine[0].get("locked_until"), "the app isn't told the link is paused")
+            _()
+
             @check("revoked links stop working")
             def _():
-                for key in ("pw_link", "open_link", "folder_link"):
-                    status(admin.delete(f"shares/{ctx[key]['token']}"), 204, "revoke")
+                for key in ("pw_link", "open_link", "folder_link", "lock_link"):
+                    if key in ctx:
+                        status(admin.delete(f"shares/{ctx[key]['token']}"), 204, "revoke")
                 r = request("GET", ctx["open_link"]["url"], timeout=30)
                 status(r, 404, "revoked link")
             _()

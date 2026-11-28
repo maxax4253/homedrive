@@ -241,9 +241,11 @@ def test_share_link_password_and_expiry(world):
     assert public.get(href).text == "shh"
 
     # Brute force gets locked out.
-    for _ in range(10):
+    for _ in range(11):
         r = public.post(f"/s/{t}", data={"password": "guess"})
     assert "Too many wrong tries" in r.text
+    # Even the right password waits until the pause is over.
+    assert "Too many wrong tries" in public.post(f"/s/{t}", data={"password": "open sesame"}).text
 
     # Expired links are dead.
     links = world["api"].app.state.links

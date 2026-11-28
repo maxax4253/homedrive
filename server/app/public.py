@@ -21,10 +21,9 @@ from .links_db import LinksDB, signing_key
 from .main import USERS_DIR
 
 UNLOCK_SECONDS = 600
-MAX_FAILURES = 8          # wrong passwords per IP...
-FAILURE_WINDOW = 600      # ...per 10 minutes
+MAX_FAILURES = 20         # wrong passwords per visitor address, across all links...
+FAILURE_WINDOW = 600      # ...per 10 minutes (each link also pauses after 10 wrong tries: links_db.py)
 MAX_HITS = 120            # page/download requests per IP per minute
-MAX_LINK_FAILURES = 30    # wrong passwords for one link from everyone together, per 10 minutes
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'",
@@ -175,14 +174,13 @@ def create_public_app(settings=None) -> FastAPI:
         if not sh.has_password:
             return download_page(sh, p)
         key = f"fail:{client_ip(request)}"
-        link_key = f"linkfail:{sh.token}"   # also caps guessing spread over many addresses
-        if not (limiter.allow(key, MAX_FAILURES, FAILURE_WINDOW, record=False)
-                and limiter.allow(link_key, MAX_LINK_FAILURES, FAILURE_WINDOW, record=False)):
-            return password_page(sh, p, "Too many wrong tries. Wait a few minutes and try again.")
+        if db.locked_until(sh.token) or not limiter.allow(key, MAX_FAILURES, FAILURE_WINDOW, record=False):
+            return password_page(sh, p, "Too many wrong tries. Wait 15 minutes and try again.")
         if not verify_password(password, sh.pw_hash):
             limiter.record(key)
-            limiter.record(link_key)
+            db.record_failure(sh.token)   # 10 wrong tries from anyone pauses the link for 15 minutes
             return password_page(sh, p, "That password isn't right.")
+        limiter.clear(key)
         return download_page(sh, p, auth.sign_value(sh.token, secret, UNLOCK_SECONDS))
 
     @app.get("/s/{token}/download")

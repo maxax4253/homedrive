@@ -35,7 +35,15 @@ CREATE TABLE IF NOT EXISTS downloads (
     ip    TEXT
 );
 CREATE INDEX IF NOT EXISTS downloads_token ON downloads(token, time);
+CREATE TABLE IF NOT EXISTS failures (
+    token TEXT NOT NULL,
+    time  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS failures_token ON failures(token, time);
 """
+
+LINK_FAILURES = 10        # wrong passwords for one link (from anyone)...
+LINK_LOCK_SECONDS = 900   # ...within 15 minutes pause it for 15 minutes, then it reopens by itself
 
 KEEP_DOWNLOAD_LOG = 200   # most recent downloads remembered per link
 
@@ -121,6 +129,21 @@ class LinksDB:
             p = row["path"]
             if p == old or p.startswith(old + "/"):
                 self._run("UPDATE shares SET path = ? WHERE token = ?", new + p[len(old):], row["token"])
+
+    def locked_until(self, token: str) -> float | None:
+        """When a link paused after too many wrong passwords opens again (None = not paused)."""
+        now = time.time()
+        rows = self._all("SELECT time FROM failures WHERE token = ? AND time > ? ORDER BY time DESC LIMIT ?",
+                         token, now - LINK_LOCK_SECONDS, LINK_FAILURES)
+        if len(rows) < LINK_FAILURES:
+            return None
+        return rows[0]["time"] + LINK_LOCK_SECONDS   # 15 minutes after the latest wrong guess
+
+    def record_failure(self, token: str) -> None:
+        now = time.time()
+        with self.lock:
+            self.conn.execute("INSERT INTO failures (token, time) VALUES (?, ?)", (token, now))
+            self.conn.execute("DELETE FROM failures WHERE time < ?", (now - 2 * LINK_LOCK_SECONDS,))
 
     def recent_downloads(self, token: str, limit: int = 20) -> list[dict]:
         rows = self._all("SELECT time, ip FROM downloads WHERE token = ? ORDER BY time DESC LIMIT ?", token, limit)

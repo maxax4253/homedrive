@@ -22,7 +22,7 @@ from .extras import Limiter, Stars, stream_zip
 from .links_db import LinksDB
 from .versions import VersionStore
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 try:
     from PIL import Image, ImageOps
@@ -552,6 +552,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "created": sh.created, "expires": sh.expires, "has_password": sh.has_password,
             "downloads": sh.downloads, "active": sh.active and exists, "url": share_url(sh.token),
             "recent_downloads": links.recent_downloads(sh.token, 10),
+            "locked_until": links.locked_until(sh.token),
         }
 
     @app.post("/api/shares")
@@ -560,8 +561,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not p.exists() or s.space.is_top(p):
             raise HTTPException(404, "Not found")
         expires = time.time() + body.expires_days * 86400 if body.expires_days else None
-        if body.password is not None and body.password != "" and len(body.password) < 4:
-            raise HTTPException(400, "Link passwords need at least 4 characters.")
         sh = links.add(s.user.username, s.user.is_admin, s.space.rel(p), p.is_dir(), expires, body.password or None)
         return share_json(sh, s)
 

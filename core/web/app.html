@@ -70,6 +70,10 @@
           animation: spin 1s linear infinite; display: inline-block; vertical-align: -3px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   [hidden] { display: none !important; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center;
+           justify-content: center; padding: 20px; z-index: 10; }
+  .modal .card { max-width: 460px; width: 100%; margin: 0; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  .modal p { color: var(--text); white-space: pre-line; }
   ol { margin: 0 0 14px; padding-left: 20px; color: var(--muted); }
   ol li { margin-bottom: 6px; }
   ol b { color: var(--text); }
@@ -196,9 +200,45 @@
   </section>
 </main>
 
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="card">
+    <h2 id="modal-title"></h2>
+    <p id="modal-text"></p>
+    <input type="text" id="modal-input" spellcheck="false" hidden>
+    <div class="actions"><button id="modal-cancel">Cancel</button><button class="primary" id="modal-ok">OK</button></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+
+// Dialogs drawn by the page itself (the HomeDrive window has no browser
+// pop-ups). ask() resolves true/false, or the typed text with {input}.
+function ask(title, text, opts = {}) {
+  return new Promise((resolve) => {
+    const m = $("modal"), input = $("modal-input");
+    $("modal-title").textContent = title;
+    $("modal-text").textContent = text;
+    $("modal-ok").textContent = opts.ok || "OK";
+    $("modal-cancel").textContent = opts.cancel || "Cancel";
+    $("modal-cancel").hidden = !!opts.notice;
+    input.hidden = opts.input === undefined;
+    input.value = opts.input || "";
+    const done = (v) => { m.hidden = true; document.removeEventListener("keydown", key, true); resolve(v); };
+    const key = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(opts.notice ? true : false); }
+      if (e.key === "Enter") { e.preventDefault(); $("modal-ok").click(); }
+    };
+    $("modal-ok").onclick = () => done(opts.input !== undefined ? input.value : true);
+    $("modal-cancel").onclick = () => done(opts.input !== undefined ? null : false);
+    document.addEventListener("keydown", key, true);
+    m.hidden = false;
+    (input.hidden ? $("modal-ok") : input).focus();
+    if (!input.hidden) input.select();
+  });
+}
+const notice = (text) => ask("HomeDrive", text, { notice: true });
 let state = null;
 
 async function call(path, body) {
@@ -239,12 +279,13 @@ function goto(n) {
 
 // A folder that already has files needs a clear yes: HomeDrive shows them and
 // can change them. Returns the confirmed flag, or null if they said no.
-function confirmExisting(r) {
+async function confirmExisting(r) {
   if (!r.needs_confirm) return false;
   const more = r.count > r.examples.length ? ", …" : "";
-  const ok = confirm("“" + r.folder + "” already has " + r.count + (r.count === 1 ? " item" : " items") +
-    " (" + r.examples.join(", ") + more + ").\n\nHomeDrive will show them, and renaming or deleting in HomeDrive changes them. " +
-    "Use this folder anyway?\n\nChoose Cancel to pick an empty or new folder instead.");
+  const ok = await ask("This folder already has files",
+    "“" + r.folder + "” has " + r.count + (r.count === 1 ? " item" : " items") + " (" + r.examples.join(", ") + more + ").\n\n" +
+    "HomeDrive will show them, and renaming or deleting in HomeDrive changes them.",
+    { ok: "Use it anyway", cancel: "Pick another folder" });
   return ok ? true : null;
 }
 let useExisting = false;
@@ -255,7 +296,7 @@ $("next1").onclick = async () => {
   showError(card, null);
   try {
     const r = await call("check-folder", { files_root: $("folder").value });
-    const yes = confirmExisting(r);
+    const yes = await confirmExisting(r);
     if (yes === null) { $("folder").focus(); $("folder").select(); return; }
     useExisting = yes;
     $("folder").value = r.folder;
@@ -278,13 +319,14 @@ $("next2").onclick = async () => {
   if ($("pw1").value !== $("pw2").value) return showError(card, new Error("The two passwords don't match."));
   if (!$("pw1").value) return showError(card, new Error("Pick a password."));
   if ($("pw1").value.length < 8 &&
-      !confirm("Your password is under 8 characters. HomeDrive can be reached from the internet, so a longer one is much safer. Use it anyway?")) return;
+      !(await ask("That's a short password", "HomeDrive can be reached from the internet, so a password of 8 or more characters is much safer.",
+                  { ok: "Use it anyway", cancel: "Pick a longer one" }))) return;
   $("next2").disabled = true;
   try {
     let body = { files_root: $("folder").value, username: $("username").value, password: $("pw1").value, use_existing: useExisting };
     state = await call("setup", body);
     if (state.needs_confirm) {   // the folder got files since step 1
-      const yes = confirmExisting(state);
+      const yes = await confirmExisting(state);
       if (yes === null) { goto(1); return; }
       state = await call("setup", Object.assign(body, { use_existing: true }));
     }
@@ -319,7 +361,7 @@ async function pollTailscale() {
   }
   polling = false;
 }
-$("ts-open").onclick = () => call("open-login", {}).catch((e) => alert(e.message));
+$("ts-open").onclick = () => call("open-login", {}).catch((e) => notice(e.message));
 $("ts-skip").onclick = () => goto(4);
 
 async function newCode(prefix) {
@@ -391,22 +433,24 @@ $("d-copy").onclick = async () => {
   catch (_) { $("d-copy").textContent = "Select it to copy"; }
   setTimeout(() => { $("d-copy").textContent = "Copy"; }, 1500);
 };
-$("d-open").onclick = () => call("open-folder", {}).catch((e) => alert(e.message));
+$("d-open").onclick = () => call("open-folder", {}).catch((e) => notice(e.message));
 $("d-change").onclick = async () => {
-  const typed = prompt("Which folder should HomeDrive use from now on? (Nothing is moved or deleted: the current folder stays as it is.)", state.files_root);
+  const typed = await ask("Use a different folder",
+    "Which folder should HomeDrive use from now on? Nothing is moved or deleted: the current folder stays as it is.",
+    { input: state.files_root, ok: "Use this folder" });
   if (!typed || typed.trim() === state.files_root) return;
   try {
     let r = await call("folder", { files_root: typed });
     if (r.needs_confirm) {
-      if (confirmExisting(r) === null) return;
+      if ((await confirmExisting(r)) === null) return;
       r = await call("folder", { files_root: typed, use_existing: true });
     }
     $("d-pill").className = "pill wait";
     $("d-pill").textContent = "Restarting…";
     $("d-folder").textContent = r.files_root;
-  } catch (e) { alert(e.message); }
+  } catch (e) { notice(e.message); }
 };
-$("d-login").onclick = () => call("open-login", {}).catch((e) => alert(e.message));
+$("d-login").onclick = () => call("open-login", {}).catch((e) => notice(e.message));
 $("d-newcode").onclick = () => newCode("d");
 $("d-upd-check").onclick = async () => {
   $("d-upd-spin").hidden = false;
@@ -415,13 +459,13 @@ $("d-upd-check").onclick = async () => {
   finally { $("d-upd-spin").hidden = true; }
 };
 $("d-upd-go").onclick = async () => {
-  if (!confirm("HomeDrive restarts to update. Your devices lose connection for a moment. Update now?")) return;
+  if (!(await ask("Update HomeDrive?", "HomeDrive restarts to update. Your devices lose connection for a moment.", { ok: "Update now" }))) return;
   try { state.update = await call("update", {}); fillDash(state); }
-  catch (e) { alert(e.message); }
+  catch (e) { notice(e.message); }
 };
 $("d-autostart").onchange = async (e) => {
   try { await call("autostart", { on: e.target.checked }); }
-  catch (err) { e.target.checked = !e.target.checked; alert(err.message); }
+  catch (err) { e.target.checked = !e.target.checked; notice(err.message); }
 };
 
 // ---------------------------------------------------------------- start
@@ -454,6 +498,7 @@ setInterval(async () => {
 }, 3000);
 document.querySelectorAll("input").forEach((el) => el.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
+  if (el.id === "modal-input") return;
   const btn = el.closest(".card").querySelector("button.primary");
   if (btn) btn.click();
 }));

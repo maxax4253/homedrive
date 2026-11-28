@@ -75,6 +75,9 @@ type App struct {
 	updates    updater
 	restart    func(*exec.Cmd) // quit, start the new version, exit
 
+	winMu sync.Mutex
+	win   *exec.Cmd // the open HomeDrive window, if any
+
 	noTailscale      bool // tests: never contact Tailscale
 	autostartOnSetup bool // the real app: start with the computer from the beginning
 }
@@ -618,7 +621,16 @@ func runApp(args []string) {
 	if err != nil {
 		// Probably already running: show the running one instead of a second copy.
 		if b, rerr := os.ReadFile(filepath.Join(*data, appURLFile)); rerr == nil {
-			_ = openInSystem(strings.TrimSpace(string(b)))
+			u := strings.TrimSpace(string(b))
+			if windowAvailable() {
+				exe, _ := os.Executable()
+				cmd := exec.Command(exe, "window")
+				cmd.Env = append(os.Environ(), "HOMEDRIVE_WINDOW_URL="+u)
+				if cmd.Start() == nil {
+					return
+				}
+			}
+			_ = openInSystem(u)
 			return
 		}
 		fatalBox(fmt.Errorf("can't start: %w", err))
@@ -635,7 +647,7 @@ func runApp(args []string) {
 	}
 	log.Printf("HomeDrive %s: open %s", Version, a.OpenURL())
 	if !a.SetupDone() {
-		_ = openInSystem(a.OpenURL()) // first run: straight to the setup wizard
+		a.showPage() // first run: straight to the setup wizard
 	}
 
 	quit := func() {
@@ -668,6 +680,55 @@ func runApp(args []string) {
 	}
 	runTray(ctx, a, quit) // returns when "Quit" is chosen
 	restarting.Lock()
+}
+
+// showPage opens the app's page: in the HomeDrive window where there is one
+// (Mac, Windows), otherwise in the browser. Opening it again replaces an open
+// window rather than stacking them up.
+func (a *App) showPage() {
+	if !windowAvailable() {
+		_ = openInSystem(a.OpenURL())
+		return
+	}
+	a.winMu.Lock()
+	defer a.winMu.Unlock()
+	if a.win != nil && a.win.ProcessState == nil {
+		_ = a.win.Process.Kill()
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		_ = openInSystem(a.OpenURL())
+		return
+	}
+	// The secret link goes in the environment, not the command line, which
+	// other people on this computer can see.
+	cmd := exec.Command(exe, "window")
+	cmd.Env = append(os.Environ(), "HOMEDRIVE_WINDOW_URL="+a.OpenURL())
+	if err := cmd.Start(); err != nil {
+		log.Printf("couldn't open the HomeDrive window (%v); using the browser", err)
+		_ = openInSystem(a.OpenURL())
+		return
+	}
+	a.win = cmd
+	started := time.Now()
+	go func() {
+		err := cmd.Wait()
+		// A window that dies at once (e.g. no WebView2 on an old Windows): use the browser.
+		if err != nil && time.Since(started) < 3*time.Second {
+			log.Printf("the HomeDrive window couldn't open (%v); using the browser", err)
+			_ = openInSystem(a.OpenURL())
+		}
+	}()
+}
+
+// windowCommand: the HomeDrive window process (started by showPage).
+func windowCommand() {
+	u := os.Getenv("HOMEDRIVE_WINDOW_URL")
+	_ = os.Unsetenv("HOMEDRIVE_WINDOW_URL")
+	if !strings.HasPrefix(u, "http://127.0.0.1:") {
+		log.Fatal("the HomeDrive window is opened from the HomeDrive menu-bar icon")
+	}
+	runWindow(u)
 }
 
 // openCommand: `homedrive-server open` opens the running app's page.

@@ -254,6 +254,10 @@ func main() {
 		runApp(os.Args[min(len(os.Args), 2):])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "window" {
+		windowCommand()
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "open" {
 		openCommand(os.Args[2:])
 		return

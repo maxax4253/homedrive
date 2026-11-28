@@ -100,11 +100,11 @@ func trayReady(ctx context.Context, a *App) {
 			case <-tick.C:
 				refresh()
 			case <-open.ClickedCh:
-				_ = openInSystem(a.OpenURL())
+				a.showPage()
 			case <-pairItem.ClickedCh:
-				_ = openInSystem(a.OpenURL()) // the dashboard has the pairing code button
+				a.showPage() // the dashboard has the pairing code button
 			case <-update.ClickedCh:
-				_ = openInSystem(a.OpenURL()) // the page asks first and shows progress
+				a.showPage() // the page asks first and shows progress
 			case <-folder.ClickedCh:
 				if s := a.settings.Load(); s != nil {
 					_ = openInSystem(s.FilesRoot)

@@ -55,12 +55,13 @@ jobs:
           cd core
           mkdir -p ../dist
           flags="-s -w -X main.Version=$V"
+          # Windows on ARM (the HomeDrive window needs a Windows machine to build;
+          # this one uses the browser instead). The x64 build is in the windows job.
+          dir=$(mktemp -d)
+          GOOS=windows GOARCH=arm64 go build -trimpath -ldflags "$flags -H windowsgui" -o "$dir/HomeDrive Server.exe" .
+          (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/HomeDrive-Server-windows-arm64.zip" "HomeDrive Server.exe")
           for arch in amd64 arm64; do
             name=$([ $arch = amd64 ] && echo x64 || echo arm64)
-            # Windows: no console window; it lives in the tray.
-            dir=$(mktemp -d)
-            GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$flags -H windowsgui" -o "$dir/HomeDrive Server.exe" .
-            (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/HomeDrive-Server-windows-$name.zip" "HomeDrive Server.exe")
             # Linux
             dir=$(mktemp -d)
             GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$flags" -o "$dir/homedrive-server" .
@@ -70,6 +71,33 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: server-windows-linux
+          path: dist/*
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod
+      - name: Build HomeDrive Server.exe (with the HomeDrive window)
+        shell: bash
+        env:
+          V: ${{ needs.version.outputs.version }}
+          CGO_ENABLED: "1"
+        run: |
+          cd core
+          mkdir -p ../dist out
+          # No console window: it lives in the tray.
+          go build -trimpath -ldflags "-s -w -X main.Version=$V -H windowsgui" -o "out/HomeDrive Server.exe" .
+          ls -l out
+      - name: Zip it
+        shell: pwsh
+        run: Compress-Archive -Path "core/out/HomeDrive Server.exe" -DestinationPath dist/HomeDrive-Server-windows-x64.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-windows
           path: dist/*
 
   mac:
@@ -104,7 +132,7 @@ jobs:
           path: dist/*
 
   publish:
-    needs: [version, windows-linux, mac]
+    needs: [version, windows-linux, windows, mac]
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:

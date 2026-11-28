@@ -126,3 +126,33 @@ final class PairingTests: XCTestCase {
         XCTAssertEqual(c.spaced, "123 456")
     }
 }
+
+final class OfflineFolderTests: XCTestCase {
+    func testFirstAccountKeepsThePlainFolder() {
+        XCTAssertEqual(OfflineFolder.name(account: "100.92.202.70-max", owner: "100.92.202.70-max"), "HomeDrive Offline")
+    }
+
+    func testOtherServersGetTheirOwnFolder() {
+        let name = OfflineFolder.name(account: "homedrive.tail92b8fb.ts.net-max", owner: "100.92.202.70-max")
+        XCTAssertEqual(name, "HomeDrive Offline (homedrive.tail92b8fb.ts.net-max)")
+        XCTAssertNotEqual(name, OfflineFolder.name(account: "homedrive.tail92b8fb.ts.net-mom", owner: "100.92.202.70-max"))
+        XCTAssertFalse(OfflineFolder.otherName("a/b:c").contains("/"))
+        XCTAssertFalse(OfflineFolder.otherName("a/b:c").contains(":"))
+        // Unclaimed: nobody gets the plain folder by accident.
+        XCTAssertEqual(OfflineFolder.name(account: "x-max", owner: nil), "HomeDrive Offline (x-max)")
+    }
+
+    func testWhoMayClaimThePlainFolder() {
+        // Existing user upgrading: their kept items are in the folder.
+        XCTAssertTrue(OfflineFolder.mayClaimMain(hasOwnState: true, ownItemsInMain: true, otherStates: 2, mainFolderHasFiles: true))
+        // Only account ever used: it's theirs.
+        XCTAssertTrue(OfflineFolder.mayClaimMain(hasOwnState: true, ownItemsInMain: false, otherStates: 0, mainFolderHasFiles: false))
+        // Brand new, nothing else around.
+        XCTAssertTrue(OfflineFolder.mayClaimMain(hasOwnState: false, ownItemsInMain: false, otherStates: 0, mainFolderHasFiles: false))
+        // New server while another account's files are in the folder: no.
+        XCTAssertFalse(OfflineFolder.mayClaimMain(hasOwnState: false, ownItemsInMain: false, otherStates: 1, mainFolderHasFiles: true))
+        XCTAssertFalse(OfflineFolder.mayClaimMain(hasOwnState: false, ownItemsInMain: false, otherStates: 0, mainFolderHasFiles: true))
+        // Several accounts and this one's items aren't there: no.
+        XCTAssertFalse(OfflineFolder.mayClaimMain(hasOwnState: true, ownItemsInMain: false, otherStates: 1, mainFolderHasFiles: true))
+    }
+}

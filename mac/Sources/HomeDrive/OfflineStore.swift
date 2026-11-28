@@ -5,8 +5,8 @@ import Observation
 
 /// Files and folders kept on this Mac and synced both ways ("Make available offline").
 ///
-/// They live in a normal folder, ~/HomeDrive Offline, so any app can open and edit
-/// them. The sync logic itself is in DriveModel+Offline.swift; this class holds the
+/// They live in a normal folder, ~/HomeDrive Offline (one per server and account),
+/// so any app can open and edit them. The sync logic itself is in DriveModel+Offline.swift; this class holds the
 /// pinned list, what each file looked like at the last sync (the "baseline"), and
 /// watches the folder for changes.
 @MainActor
@@ -56,9 +56,13 @@ final class OfflineStore {
     @ObservationIgnored private var stream: FSEventStreamRef?
     @ObservationIgnored private var pendingWork: DispatchWorkItem?
 
-    /// ~/HomeDrive Offline: a normal folder you can open in Finder.
-    let filesDir: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("HomeDrive Offline", isDirectory: true)
+    /// ~/HomeDrive Offline: a normal folder you can open in Finder. Each server +
+    /// account gets its own folder, so signing in to another server can never mix
+    /// its files with these (see OfflineFolder).
+    private(set) var filesDir: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(OfflineFolder.mainName, isDirectory: true)
+
+    var folderName: String { filesDir.lastPathComponent }
 
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.bytes } }
 
@@ -69,6 +73,44 @@ final class OfflineStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         stateFile = dir.appendingPathComponent("\(safe).json")
         load()
+
+        // Which account owns the plain "HomeDrive Offline" folder.
+        let ownerFile = dir.appendingPathComponent("folder-owner.txt")
+        var owner = (try? String(contentsOf: ownerFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if owner?.isEmpty ?? true {
+            let states = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+                .filter { $0.hasSuffix(".json") }
+            let mainFolder = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(OfflineFolder.mainName, isDirectory: true)
+            let mainHasFiles = !(((try? FileManager.default.contentsOfDirectory(atPath: mainFolder.path)) ?? [])
+                .filter { !OfflineStore.isIgnored($0) }.isEmpty)
+            let ownItemsInMain = items.contains {
+                FileManager.default.fileExists(atPath: mainFolder.appendingPathComponent(LocalPath.clean($0.path)).path)
+            }
+            if OfflineFolder.mayClaimMain(hasOwnState: states.contains("\(safe).json"), ownItemsInMain: ownItemsInMain,
+                                          otherStates: states.filter { $0 != "\(safe).json" }.count,
+                                          mainFolderHasFiles: mainHasFiles) {
+                owner = account
+                try? account.write(to: ownerFile, atomically: true, encoding: .utf8)
+            }
+        }
+        let newDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(OfflineFolder.name(account: account, owner: owner), isDirectory: true)
+        if newDir != filesDir {
+            filesDir = newDir
+            restartWatching()
+        }
+    }
+
+    /// The watched folder changed (signed in to another server): watch the new one.
+    private func restartWatching() {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+        startWatching()
     }
 
     // MARK: - Lookups
@@ -251,5 +293,31 @@ final class OfflineStore {
         if let data = try? JSONEncoder().encode(SavedState(items: items, baselines: baselines)) {
             try? data.write(to: stateFile, options: .atomic)
         }
+    }
+}
+
+/// Which folder an account's offline files live in. The first account keeps the
+/// plain "HomeDrive Offline" folder; any other server or account gets its own,
+/// "HomeDrive Offline (server-name)", so their files can never mix.
+enum OfflineFolder {
+    static let mainName = "HomeDrive Offline"
+
+    static func name(account: String, owner: String?) -> String {
+        owner == account ? mainName : otherName(account)
+    }
+
+    static func otherName(_ account: String) -> String {
+        let cleaned = account.map { "/:\\".contains($0) ? "-" : $0 }
+        return "\(mainName) (\(String(cleaned).prefix(80)))"
+    }
+
+    /// May this account take the plain folder? (Asked only while nobody has.) Yes if
+    /// it was already using it before folders were per account (its kept items are
+    /// in there, or it's the only account), or if it's brand new and the folder is
+    /// unused: no other account's records and nothing in it.
+    static func mayClaimMain(hasOwnState: Bool, ownItemsInMain: Bool, otherStates: Int,
+                             mainFolderHasFiles: Bool) -> Bool {
+        if hasOwnState { return ownItemsInMain || otherStates == 0 }
+        return otherStates == 0 && !mainFolderHasFiles
     }
 }

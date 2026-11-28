@@ -522,7 +522,7 @@ struct OfflineScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     InfoBanner(icon: "arrow.triangle.2.circlepath",
-                               text: "These live in your “HomeDrive Offline” folder (\(Format.size(model.offline.totalBytes))). Open and edit them in any app, even without a connection. Your changes upload automatically, and changes from HomeDrive download every couple of minutes. If a file changes in both places, both copies are kept.")
+                               text: "These live in your “\(model.offline.folderName)” folder (\(Format.size(model.offline.totalBytes))). Open and edit them in any app, even without a connection. Your changes upload automatically, and changes from HomeDrive download every couple of minutes. If a file changes in both places, both copies are kept.")
                     if model.offline.items.isEmpty {
                         EmptyState(icon: "arrow.down.circle", title: "Nothing offline yet",
                                    message: "Right-click a file or folder and choose Make available offline.")

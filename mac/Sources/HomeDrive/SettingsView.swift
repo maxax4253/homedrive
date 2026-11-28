@@ -44,7 +44,7 @@ struct SettingsScreen: View {
 
                     SettingsGroup(title: "Offline") {
                         SettingsRow(icon: "arrow.triangle.2.circlepath",
-                                    title: "~/HomeDrive Offline",
+                                    title: "~/" + model.offline.folderName,
                                     detail: "\(model.offline.items.count) item\(model.offline.items.count == 1 ? "" : "s") kept offline · \(Format.size(model.offline.totalBytes)) on this Mac") {
                             HStack(spacing: 8) {
                                 Button("Open folder") { model.offline.revealFolder() }

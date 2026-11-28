@@ -2,7 +2,10 @@ module github.com/maxax4253/homedrive/core
 
 go 1.27.4
 
-require tailscale.com v1.106.1
+require (
+	fyne.io/systray v1.12.2
+	tailscale.com v1.106.1
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect

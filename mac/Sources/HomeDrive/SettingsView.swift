@@ -225,9 +225,9 @@ extension DriveModel {
             errorMessage = friendly(error)
             return
         }
-        // Rebuilding takes a minute or two; the server is briefly offline while it restarts.
+        // Rebuilding takes a few minutes (it also fetches security fixes); the server is briefly offline while it restarts.
         let before = serverVersion
-        for _ in 0..<90 {
+        for _ in 0..<160 {
             try? await Task.sleep(for: .seconds(3))
             if let status = try? await api.linksStatus() {
                 linksStatus = status

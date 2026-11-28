@@ -25,7 +25,7 @@ jobs:
           go mod verify
           go vet ./...
           go build -o /tmp/homedrive-core . && ls -lh /tmp/homedrive-core
-          head -5 go.mod
+          echo "=====go.mod"; cat go.mod; echo "=====go.sum"; cat go.sum; echo "=====end"
       - uses: actions/upload-artifact@v7
         with:
           name: go-mod

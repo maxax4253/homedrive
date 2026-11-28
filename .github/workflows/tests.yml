@@ -63,7 +63,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Vet and unit tests
-        run: cd core && go vet ./... && go test -race ./...
+        run: cd core && go mod verify && go vet ./... && go test -race ./...
+      - name: Also builds without Tailscale (standard library only)
+        run: |
+          cd core
+          go vet -modfile=go.notailscale.mod -tags notailscale ./...
+          go test -modfile=go.notailscale.mod -tags notailscale ./...
       - name: Build (with the race detector for the checks below)
         run: cd core && go build -race -o /tmp/homedrive-core .
       - name: Builds for every system

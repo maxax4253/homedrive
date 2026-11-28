@@ -5,7 +5,7 @@ name: Refresh Go libraries
 on:
   workflow_dispatch:
   push:
-    branches: ["gomod-*", "tailscale"]
+    branches: ["gomod-*"]
     paths: ["core/**", ".github/workflows/gomod.yml"]
 permissions:
   contents: read

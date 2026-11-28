@@ -35,3 +35,20 @@ final class OfflineNamesTests: XCTestCase {
         XCTAssertFalse(OfflineStore.isIgnored("my~$file.txt"))
     }
 }
+
+final class LocalPathTests: XCTestCase {
+    func testServerPathsStayInside() {
+        XCTAssertEqual(LocalPath.clean("Photos/2026/a.jpg"), "Photos/2026/a.jpg")
+        XCTAssertEqual(LocalPath.clean("../../Library/LaunchAgents/x.plist"), "Library/LaunchAgents/x.plist")
+        XCTAssertEqual(LocalPath.clean("/etc/passwd"), "etc/passwd")
+        XCTAssertEqual(LocalPath.clean("a/./b//../c"), "a/b/c")
+        XCTAssertEqual(LocalPath.clean(" leading space.txt"), " leading space.txt")
+    }
+
+    @MainActor
+    func testOfflineCopiesStayInTheOfflineFolder() {
+        let store = OfflineStore()
+        let url = store.localURL(for: "../../.ssh/authorized_keys").standardizedFileURL
+        XCTAssertTrue(url.path.hasPrefix(store.filesDir.standardizedFileURL.path + "/"), url.path)
+    }
+}

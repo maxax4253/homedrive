@@ -12,6 +12,10 @@ from pathlib import Path
 TRASH_NAME = ".trash"
 SHARED_NAME = "Shared"
 INDEX_NAME = ".index.json"
+UPLOAD_TMP = ".upload-tmp"
+# Folders HomeDrive manages itself: nobody can browse, upload, move or create
+# things inside them directly (the Trash has its own endpoints).
+RESERVED = {TRASH_NAME, UPLOAD_TMP}
 
 
 class PathError(ValueError):
@@ -40,7 +44,15 @@ class Space:
 
     def resolve(self, rel: str) -> Path:
         """Turn a client path like 'Photos/a.jpg' into a safe absolute path."""
-        rel = (rel or "").strip().strip("/")
+        # Only trim slashes: names may really start or end with a space.
+        rel = (rel or "").strip("/")
+        parts = rel.split("/")
+        if any(part in RESERVED for part in parts):
+            raise PathError("That folder is managed by HomeDrive")
+        if any(bad_char(part) for part in parts):
+            raise PathError("File names can't contain control characters")
+        if any(len(part.encode()) > 255 for part in parts) or len(rel.encode()) > 3000:
+            raise PathError("That name is too long")
         base, sub = self.home, rel
         if self._mapped:
             first, _, rest = rel.partition("/")
@@ -64,6 +76,11 @@ class Space:
     def roots(self) -> list[Path]:
         """Folders to walk for search/recent."""
         return [self.home] + ([self.shared] if self._mapped else [])
+
+
+def bad_char(name: str) -> bool:
+    """Control characters (newlines, NUL...) in a name break headers and logs."""
+    return any(ord(c) < 32 or ord(c) == 127 for c in name)
 
 
 def _inside(p: Path, base: Path) -> bool:
@@ -119,8 +136,10 @@ def unique_path(p: Path) -> Path:
 
 def safe_name(name: str) -> str:
     name = Path(name.replace("\\", "/")).name
-    if name in ("", ".", ".."):
+    if name in ("", ".", "..") or name in RESERVED or bad_char(name):
         raise PathError("Bad file name")
+    if len(name.encode()) > 255:
+        raise PathError("That file name is too long")
     return name
 
 
@@ -350,4 +369,4 @@ def sha256(p: Path) -> str:
 def thumb_key(p: Path, size: int) -> str:
     st = p.stat()
     raw = f"{p}:{st.st_mtime_ns}:{st.st_size}:{size}"
-    return hashlib.sha1(raw.encode()).hexdigest()
+    return hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()

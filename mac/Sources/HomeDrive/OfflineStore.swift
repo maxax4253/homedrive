@@ -82,7 +82,7 @@ final class OfflineStore {
     }
 
     func localURL(for path: String) -> URL {
-        filesDir.appendingPathComponent(path)
+        filesDir.appendingPathComponent(LocalPath.clean(path))
     }
 
     /// A local copy you can open right now (nil if it hasn't downloaded yet).

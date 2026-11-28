@@ -22,7 +22,7 @@ from .extras import Limiter, Stars, stream_zip
 from .links_db import LinksDB
 from .versions import VersionStore
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 try:
     from PIL import Image, ImageOps
@@ -101,6 +101,20 @@ class LinksBody(BaseModel):
 class RestoreVersionBody(BaseModel):
     path: str
     version: str
+
+
+def newer_mtime(p: Path, old: float | None) -> None:
+    """Make sure a replaced file's modified time moved forward.
+
+    Some file systems only update timestamps every few milliseconds, so two quick
+    saves can end up with the same time. Then "has this changed since you opened
+    it?" can't tell them apart. Nudging the time forward keeps every save distinct.
+    """
+    if old is None:
+        return
+    st = p.stat()
+    if st.st_mtime < old + 0.05:
+        os.utime(p, (st.st_atime, old + 0.05))
 
 
 def user_space(settings: Settings, username: str, is_admin: bool, create: bool = True) -> storage.Space:
@@ -198,16 +212,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             e["starred"] = s.stars.is_starred(e["path"])
         return entries
 
+    refreshing: set[str] = set()
+
     def usage(username: str, home: Path, fresh: bool = False) -> int:
-        """Bytes in a user's home folder, cached for 30 seconds."""
+        """Bytes in a user's home folder. Measuring a big drive takes seconds, so a
+        cached number is returned right away and refreshed in the background once
+        it's over 30 seconds old. `fresh` (quota checks) always measures."""
+        def measure():
+            used = storage.folder_size(home)
+            with usage_lock:
+                usage_cache[username] = (time.time(), used)
+                refreshing.discard(username)
+            return used
+
         with usage_lock:
             cached = usage_cache.get(username)
-        if cached and not fresh and time.time() - cached[0] < 30:
+            stale = cached is not None and time.time() - cached[0] >= 30
+            start_refresh = stale and not fresh and username not in refreshing
+            if start_refresh:
+                refreshing.add(username)
+        if cached and not fresh:
+            if start_refresh:
+                threading.Thread(target=measure, daemon=True).start()
             return cached[1]
-        used = storage.folder_size(home)
-        with usage_lock:
-            usage_cache[username] = (time.time(), used)
-        return used
+        return measure()
 
     def share_url(token: str) -> str | None:
         return f"{settings.public_url}/s/{token}" if settings.public_url else None
@@ -289,10 +317,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Not found")
         return {"entries": storage.tree(s.space, path)}
 
+    recent_cache: dict[tuple, tuple[float, list]] = {}
+
     @app.get("/api/recent")
     def recent(limit: int = Query(50, ge=1, le=500), s: Session = Depends(require)):
-        skip = {USERS_DIR} if s.user.is_admin else None
-        return {"entries": mark(s, storage.recent(s.space, limit, skip))}
+        # Finding the newest files means looking at every file, which takes a few
+        # seconds on a big drive, so reuse the answer for 20 seconds.
+        key = (s.user.username, limit)
+        hit = recent_cache.get(key)
+        if hit and time.time() - hit[0] < 20:
+            found = hit[1]
+        else:
+            skip = {USERS_DIR} if s.user.is_admin else None
+            found = storage.recent(s.space, limit, skip)
+            recent_cache[key] = (time.time(), found)
+        # Drop anything deleted or moved since, so the list never shows ghosts.
+        fresh = []
+        for e in found:
+            try:
+                if s.space.resolve(e["path"]).exists():
+                    fresh.append(dict(e))
+            except storage.PathError:
+                continue
+        return {"entries": mark(s, fresh)}
+
+    def forget_recent(s: Session) -> None:
+        for k in [k for k in recent_cache if k[0] == s.user.username]:
+            recent_cache.pop(k, None)
 
     @app.get("/api/search")
     def search(q: str, limit: int = Query(200, ge=1, le=1000), s: Session = Depends(require)):
@@ -383,14 +434,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         folder = safe(s, path)
         if not folder.is_dir():
             raise HTTPException(404, "Folder not found")
-        incoming = int(request.headers.get("content-length") or 0)
+        try:
+            incoming = max(0, int(request.headers.get("content-length") or 0))
+        except ValueError:
+            incoming = 0
         # Never let uploads fill the disk completely: the server's system lives there too.
-        if shutil.disk_usage(folder).free - incoming < settings.min_free_bytes:
-            raise HTTPException(507, "The server's disk is almost full, so the upload was stopped.")
+        room = shutil.disk_usage(folder).free - settings.min_free_bytes
+        too_big = HTTPException(507, "The server's disk is almost full, so the upload was stopped.")
         if s.user.quota_bytes:
             used = usage(s.user.username, s.space.home, fresh=True)
-            if used + incoming > s.user.quota_bytes:
-                raise HTTPException(413, f"Storage limit reached ({s.user.quota_bytes / GB:.1f} GB).")
+            room_in_quota = s.user.quota_bytes - used
+            if room_in_quota < room:
+                room = room_in_quota
+                too_big = HTTPException(413, f"Storage limit reached ({s.user.quota_bytes / GB:.1f} GB).")
+        if incoming > room:
+            raise too_big
+        # The size header can be missing (chunked uploads) or wrong, so the limit is
+        # also enforced while the file is being written.
         if replace and len(files) != 1:
             raise HTTPException(400, "Replace one file at a time")
         saved = []
@@ -399,10 +459,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 name = storage.safe_name(f.filename or "")
             except storage.PathError as e:
                 raise HTTPException(400, str(e))
+            old_mtime = None
             if replace:
                 dest = folder / name
                 if not dest.is_file():
                     raise HTTPException(404, "The file to replace isn't there anymore")
+                old_mtime = dest.stat().st_mtime
                 if if_modified is not None and abs(dest.stat().st_mtime - if_modified) > 0.01:
                     raise HTTPException(409, "This file changed on the server since you opened it")
             else:
@@ -412,13 +474,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 with tempfile.NamedTemporaryFile(dir=folder, prefix=".upload-", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
-                    shutil.copyfileobj(f.file, tmp, length=1024 * 1024)
+                    while chunk := f.file.read(1024 * 1024):
+                        room -= len(chunk)
+                        if room < 0:
+                            raise too_big
+                        tmp.write(chunk)
                     tmp.flush()
                     os.fsync(tmp.fileno())
                 tmp_path.chmod(0o644)
                 if replace:
                     versions.save(dest)
                 tmp_path.replace(dest)
+                newer_mtime(dest, old_mtime)
             except BaseException:
                 if tmp_path:
                     tmp_path.unlink(missing_ok=True)
@@ -430,6 +497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             saved.append(e)
         with usage_lock:
             usage_cache.pop(s.user.username, None)
+        forget_recent(s)
         return {"saved": mark(s, saved)}
 
     @app.post("/api/mkdir")
@@ -449,6 +517,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             new = s.space.rel(moved)
             s.stars.moved(body.src.strip("/"), new)
             links.moved(s.user.username, body.src.strip("/"), new)
+            forget_recent(s)
             return mark(s, [storage.entry(s.space, moved)])[0]
         except FileNotFoundError:
             raise HTTPException(404, "Not found")
@@ -538,8 +607,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # shows in Recent and offline copies on Macs pick up the change.
             shutil.copyfile(old, tmp_path)
             tmp_path.chmod(0o644)
+            before = p.stat().st_mtime
             versions.save(p)
             tmp_path.replace(p)
+            newer_mtime(p, before)
         except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise

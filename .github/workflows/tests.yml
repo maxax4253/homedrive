@@ -19,6 +19,37 @@ jobs:
       - name: Test
         run: cd server && python -m pytest -q
 
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scanners
+        run: pip install bandit pip-audit
+      - name: Known security holes in the libraries HomeDrive uses
+        run: pip-audit -r server/requirements.txt
+      - name: Risky code patterns (medium and high severity)
+        run: bandit -q -r server/app server/selftest.py -ll
+      - name: Random-junk test with fresh seeds
+        run: |
+          pip install -r server/requirements.txt pytest httpx
+          cd server
+          for seed in 11 22 33; do FUZZ_SEED=$seed python -m pytest -q tests/test_fuzz.py; done
+
+  stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r server/requirements.txt
+      - name: 50,000 files, a 1 GB upload, odd names, 20 users at once
+        run: cd server && python tools/stress.py --files 50000 --big-gb 1
+
   mac:
     runs-on: macos-latest
     steps:

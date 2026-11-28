@@ -16,7 +16,7 @@ class VersionStore:
         self.keep = keep
 
     def _dir(self, physical: Path) -> Path:
-        return self.root / hashlib.sha1(str(physical).encode()).hexdigest()
+        return self.root / hashlib.sha1(str(physical).encode(), usedforsecurity=False).hexdigest()
 
     def save(self, physical: Path) -> None:
         """Copy the current file into history before it gets replaced."""

@@ -156,3 +156,80 @@ def test_old_trash_and_versions_are_cleaned_up(world):
         all(v["source"] != "edit" for v in admin.get("/api/versions", params={"path": "doc.txt"}).json()["versions"])
     assert admin.get("/api/me").json()["cleanup_days"] == 30
     assert os.path.exists(files / "doc.txt")
+
+
+def test_odd_file_names(world):
+    admin = world["admin"]
+    for name in (" leading space.txt", "trailing space .txt", "emoji 🎉.txt", "é.txt", "%20 # ?.txt"):
+        r = admin.post("/api/upload", files=[("files", (name, name.encode()))])
+        assert r.status_code == 200, r.text
+        path = r.json()["saved"][0]["path"]
+        assert admin.get("/api/download", params={"path": path}).content == name.encode(), name
+        assert admin.post("/api/move", json={"src": path, "dst": "Odd/" + path}).status_code == 200
+
+
+def test_recent_drops_deleted_files_right_away(world):
+    admin = world["admin"]
+    admin.post("/api/upload", files=[("files", ("a.txt", b"a"))])
+    assert [e["name"] for e in admin.get("/api/recent").json()["entries"]] == ["a.txt"]
+    admin.post("/api/delete", json={"path": "a.txt"})
+    assert admin.get("/api/recent").json()["entries"] == []
+
+
+def test_quick_successive_saves_are_still_told_apart(world, monkeypatch):
+    # Simulate a file system with coarse timestamps: every write gets the same time.
+    admin, files = world["admin"], world["files"]
+    first = admin.post("/api/upload", files=[("files", ("n.txt", b"one"))]).json()["saved"][0]
+    real_replace = type(files).replace
+
+    def same_time_replace(self, target):
+        out = real_replace(self, target)
+        os.utime(target, (first["modified"], first["modified"]))
+        return out
+    import os
+    monkeypatch.setattr(type(files), "replace", same_time_replace)
+    second = admin.post("/api/upload", params={"replace": "true", "if_modified": first["modified"]},
+                        files=[("files", ("n.txt", b"two"))])
+    assert second.status_code == 200 and second.json()["saved"][0]["modified"] > first["modified"]
+    stale = admin.post("/api/upload", params={"replace": "true", "if_modified": first["modified"]},
+                       files=[("files", ("n.txt", b"three"))])
+    assert stale.status_code == 409
+
+
+def test_quota_cant_be_dodged_with_a_missing_or_wrong_size(world):
+    import httpx
+    admin, login = world["admin"], world["login"]
+    admin.post("/api/users", json={"username": "kid", "password": "kid-pass-a", "quota_gb": 0.000001})  # ~1 KB
+    kid = login("kid", "kid-pass-a")
+    body = (b"--b\r\nContent-Disposition: form-data; name=\"files\"; filename=\"big.bin\"\r\n\r\n"
+            + b"x" * 50_000 + b"\r\n--b--\r\n")
+
+    def chunked():   # no Content-Length at all
+        for i in range(0, len(body), 4096):
+            yield body[i:i + 4096]
+    r = kid.post("/api/upload", content=chunked(), headers={"Content-Type": "multipart/form-data; boundary=b"})
+    assert r.status_code == 413
+    r = kid.post("/api/upload", content=body, headers={"Content-Type": "multipart/form-data; boundary=b",
+                                                       "Content-Length": str(len(body))})
+    assert r.status_code == 413
+    files = world["files"] / "Users" / "kid"
+    assert not [p for p in files.iterdir() if p.is_file()]
+    assert httpx  # imported for the test client
+
+
+def test_managed_folders_and_bad_names_are_blocked(world):
+    admin = world["admin"]
+    admin.post("/api/upload", files=[("files", ("a.txt", b"a"))])
+    for path in (".trash", ".trash/x", ".upload-tmp", "Docs/.trash/x"):
+        assert admin.get("/api/list", params={"path": path}).status_code == 400, path
+        assert admin.post("/api/mkdir", json={"path": path}).status_code == 400, path
+    assert admin.post("/api/move", json={"src": "a.txt", "dst": ".trash/a.txt"}).status_code == 400
+    assert admin.post("/api/move", json={"src": "a.txt", "dst": ".upload-tmp/a.txt"}).status_code == 400
+    for bad in (b"bell\x07.txt", b"tab\x09.txt", b"del\x7f.txt", b".trash"):
+        # Sent raw, the way a hostile client would (normal clients escape these).
+        body = b'--b\r\nContent-Disposition: form-data; name="files"; filename="' + bad + b'"\r\n\r\nx\r\n--b--\r\n'
+        r = admin.post("/api/upload", content=body, headers={"Content-Type": "multipart/form-data; boundary=b"})
+        assert r.status_code == 400, bad
+    assert admin.post("/api/mkdir", json={"path": "new\nline"}).status_code == 400
+    assert admin.get("/api/download", params={"path": "a\x00.txt"}).status_code == 400
+    assert admin.post("/api/upload", files=[("files", ("x" * 300 + ".txt", b"x"))]).status_code == 400

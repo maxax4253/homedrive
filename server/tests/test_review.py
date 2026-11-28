@@ -52,7 +52,7 @@ def test_failed_upload_leaves_no_temp_file(world, monkeypatch):
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(main.shutil, "copyfileobj", boom)
+    monkeypatch.setattr(main.os, "fsync", boom)
     try:
         admin.post("/api/upload", files=[("files", ("a.txt", b"hello"))])
     except OSError:

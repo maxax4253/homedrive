@@ -29,7 +29,7 @@ class Settings:
     cleanup_days: int = 30
 
 
-UPLOAD_TMP = ".upload-tmp"
+from .storage import UPLOAD_TMP  # noqa: E402  (same name everywhere)
 
 
 def use_upload_tmp(files_root: Path) -> None:

@@ -122,8 +122,14 @@ def create_public_app(settings=None) -> FastAPI:
 
     def describe(sh, p: Path) -> str:
         if p.is_dir():
-            files = sum(1 for _ in visible_files(p))
-            what = f"Folder · {files} file{'s' if files != 1 else ''} · downloads as .zip"
+            # Count at most 10,000 so a huge folder can't be used to tie up the server.
+            files = 0
+            for _ in visible_files(p):
+                files += 1
+                if files > 10_000:
+                    break
+            count = "10,000+ files" if files > 10_000 else f"{files} file{'s' if files != 1 else ''}"
+            what = f"Folder · {count} · downloads as .zip"
         else:
             what = _size(p.stat().st_size)
         if sh.expires:

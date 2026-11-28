@@ -454,7 +454,7 @@ final class DriveModel {
     /// Downloads the file to a cache folder and opens it in Quick Look.
     func preview(_ entry: Entry) async {
         guard let api, !entry.isDir else { return }
-        let local = cacheDir.appendingPathComponent(entry.path)
+        let local = cacheDir.appendingPathComponent(LocalPath.clean(entry.path))
         let attrs = try? FileManager.default.attributesOfItem(atPath: local.path)
         let cachedSize = (attrs?[.size] as? NSNumber)?.int64Value
         let cachedDate = attrs?[.modificationDate] as? Date

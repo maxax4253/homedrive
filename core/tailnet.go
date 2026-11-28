@@ -90,9 +90,13 @@ func (t *tailnet) run(ctx context.Context, handler http.Handler) {
 				if st.AuthURL != "" && st.AuthURL != t.status.LoginURL {
 					log.Printf("Tailscale: to connect HomeDrive, open %s", st.AuthURL)
 				}
-				t.set(func(s *TailnetStatus) { s.State, s.LoginURL = "needs_login", st.AuthURL })
+				if t.status.State != "needs_login" || st.AuthURL != t.status.LoginURL {
+					t.set(func(s *TailnetStatus) { s.State, s.LoginURL = "needs_login", st.AuthURL })
+				}
 			case "NeedsMachineAuth":
-				t.set(func(s *TailnetStatus) { s.State = "needs_approval" })
+				if t.status.State != "needs_approval" {
+					t.set(func(s *TailnetStatus) { s.State, s.LoginURL = "needs_approval", "" })
+				}
 			}
 		}
 		if domain != "" {

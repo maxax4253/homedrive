@@ -83,7 +83,7 @@ jobs:
           HOMEDRIVE_FILES=/tmp/ts/files HOMEDRIVE_DATA=/tmp/ts/data HOMEDRIVE_PASSWORD=x \
             /tmp/homedrive-core -listen 127.0.0.1:18099 -tailscale -tailscale-name homedrive-ci 2> /tmp/ts.log &
           for i in $(seq 1 90); do
-            grep -q '"needs_login"' /tmp/ts/data/tailscale-status.json 2>/dev/null && break; sleep 1
+            grep -q '"login_url"' /tmp/ts/data/tailscale-status.json 2>/dev/null && break; sleep 1
           done
           /tmp/homedrive-core status -data /tmp/ts/data | tee /tmp/ts-status.txt
           grep -q "https://login.tailscale.com/" /tmp/ts-status.txt

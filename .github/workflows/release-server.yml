@@ -118,7 +118,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           V: ${{ needs.version.outputs.version }}
         run: |
-          gh release create "server-v$V" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          pre=""
+          [[ "$V" == *-* ]] && pre="--prerelease"   # test builds (1.0.0-beta.1): never offered as updates
+          gh release create "server-v$V" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" $pre \
             --title "HomeDrive Server $V" \
             --notes "Download the one for your computer, open it, and follow the setup page.
 

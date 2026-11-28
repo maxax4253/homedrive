@@ -36,6 +36,8 @@ type Server struct {
 	links    *Links
 	versions *Versions
 	login    *Limiter
+	devices  *Devices
+	pairing  *Pairing
 
 	mu        sync.Mutex
 	stars     map[string]*Stars
@@ -55,9 +57,10 @@ type recentEntry struct {
 }
 
 type session struct {
-	user  *User
-	space *Space
-	stars *Stars
+	user   *User
+	space  *Space
+	stars  *Stars
+	device *Device // nil when pairing is off
 }
 
 // ---------------------------------------------------------------- plumbing
@@ -141,7 +144,11 @@ func (srv *Server) session(r *http.Request) (*session, error) {
 	if u == nil || u.TokenVersion != version {
 		return nil, fail(401, "Not logged in")
 	}
-	return &session{user: u, space: srv.spaceFor(u.Username, u.IsAdmin, true), stars: srv.starsFor(u)}, nil
+	dev, err := srv.checkDevice(r, u.Username)
+	if err != nil {
+		return nil, err
+	}
+	return &session{user: u, space: srv.spaceFor(u.Username, u.IsAdmin, true), stars: srv.starsFor(u), device: dev}, nil
 }
 
 // spaceFor: the admin sees the whole drive; everyone else gets Users/<name> plus Shared.
@@ -271,8 +278,9 @@ func (srv *Server) Routes(mux *http.ServeMux) {
 	admin := func(h handler) http.HandlerFunc { return srv.authed(true, h) }
 
 	mux.HandleFunc("GET /api/health", srv.open(func(w http.ResponseWriter, r *http.Request) (any, error) {
-		return map[string]any{"ok": true, "name": "HomeDrive", "version": Version}, nil
+		return map[string]any{"ok": true, "name": "HomeDrive", "version": Version, "pairing": srv.cfg.RequirePairing}, nil
 	}))
+	srv.pairingRoutes(mux)
 	mux.HandleFunc("POST /api/login", srv.open(srv.loginHandler))
 	mux.HandleFunc("GET /api/me", a(srv.me))
 	mux.HandleFunc("POST /api/me/password", a(srv.changeMyPassword))
@@ -353,6 +361,11 @@ func (srv *Server) loginHandler(w http.ResponseWriter, r *http.Request) (any, er
 		return nil, err
 	}
 	name := strings.ToLower(strings.TrimSpace(body.Username))
+	// A device that isn't paired can't even try a password.
+	dev, err := srv.checkDevice(r, "")
+	if err != nil {
+		return nil, err
+	}
 	keys := map[string]int{"user:" + name: loginFailures, "ip:" + clientIP(r): loginFailuresPerIP}
 	for k, n := range keys {
 		if !srv.login.Allow(k, n, loginWindow, false) {
@@ -360,7 +373,7 @@ func (srv *Server) loginHandler(w http.ResponseWriter, r *http.Request) (any, er
 		}
 	}
 	u := srv.users.CheckLogin(name, body.Password)
-	if u == nil {
+	if u == nil || (dev != nil && dev.User != u.Username) {
 		for k := range keys {
 			srv.login.Record(k)
 		}
@@ -1172,6 +1185,7 @@ func (srv *Server) deleteUser(w http.ResponseWriter, r *http.Request, s *session
 		return nil, err
 	}
 	srv.links.RevokeAllFor(name)
+	srv.devices.RemoveAllFor(name)
 	srv.mu.Lock()
 	delete(srv.stars, name)
 	srv.mu.Unlock()

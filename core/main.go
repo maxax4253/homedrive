@@ -37,6 +37,8 @@ type Config struct {
 	VersionsKeep int
 	Listen       string
 	PublicListen string // optional separate address for share pages only
+	// Every device must be paired with a code before it can sign in.
+	RequirePairing bool
 }
 
 func env(name, def string) string {
@@ -66,10 +68,13 @@ func loadConfig(args []string) (*Config, error) {
 	if v, err := strconv.ParseFloat(os.Getenv("HOMEDRIVE_MIN_FREE_GB"), 64); err == nil {
 		*minFree = v
 	}
+	noPairing := fsFlags.Bool("no-pairing", os.Getenv("HOMEDRIVE_NO_PAIRING") == "1",
+		"let any device sign in with just a password (only for a server nobody else can reach)")
 	fsFlags.IntVar(&c.CleanupDays, "cleanup-days", envInt("HOMEDRIVE_CLEANUP_DAYS", 30), "empty trash and old versions after this many days (0 = never)")
 	if err := fsFlags.Parse(args); err != nil {
 		return nil, err
 	}
+	c.RequirePairing = !*noPairing
 	c.Password = os.Getenv("HOMEDRIVE_PASSWORD") // never a flag: flags show up in process lists
 	c.TokenDays = envInt("HOMEDRIVE_TOKEN_DAYS", 30)
 	c.VersionsKeep = 10
@@ -121,11 +126,15 @@ func NewServer(c *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	devices, err := OpenDevices(c.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	// Leftovers from an upload that was cut off by a crash.
 	_ = os.RemoveAll(filepath.Join(c.FilesRoot, uploadTmp))
 	return &Server{
 		cfg: c, users: users, links: links, versions: OpenVersions(c.DataDir, c.VersionsKeep),
-		login: NewLimiter(loginWindow), stars: map[string]*Stars{}, usageMap: map[string]usageEntry{},
+		login: NewLimiter(loginWindow), devices: devices, pairing: OpenPairing(c.DataDir), stars: map[string]*Stars{}, usageMap: map[string]usageEntry{},
 		measuring: map[string]bool{}, recent: map[string]recentEntry{},
 	}, nil
 }
@@ -201,6 +210,10 @@ func main() {
 		fmt.Println(Version)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "pair-code" {
+		pairCodeCommand(os.Args[2:])
+		return
+	}
 	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
@@ -246,4 +259,29 @@ func main() {
 	for _, s := range servers {
 		_ = s.Shutdown(shutdown)
 	}
+}
+
+// pairCodeCommand prints a pairing code. It runs on the server computer itself,
+// which is what makes it trustworthy: only someone at that computer can do it.
+//
+//	homedrive-server pair-code -data ~/.homedrive -user max
+func pairCodeCommand(args []string) {
+	f := flag.NewFlagSet("pair-code", flag.ExitOnError)
+	data := f.String("data", env("HOMEDRIVE_DATA", "./data"), "the server's data folder")
+	user := f.String("user", env("HOMEDRIVE_USERNAME", "admin"), "whose device this is")
+	_ = f.Parse(args)
+	users, err := OpenUsers(*data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	name := strings.ToLower(strings.TrimSpace(*user))
+	if users.Get(name) == nil {
+		log.Fatalf("there's no account called %q", name)
+	}
+	code, expires, err := NewCode(*data, name)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\n", code)
+	fmt.Fprintf(os.Stderr, "Pairing code for %s, valid until %s\n", name, expires.Format("3:04 PM"))
 }

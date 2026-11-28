@@ -41,17 +41,31 @@ def go_world(tmp_path, files, data, backup):
             break
         except httpx.HTTPError:
             time.sleep(0.05)
-    api = httpx.Client(base_url=base, timeout=60)
     public = httpx.Client(base_url=base, timeout=60)
+    devices = {}   # every device must be paired first: the admin's with a code made on the server
 
     def login(user, pw):
         c = httpx.Client(base_url=base, timeout=60)
-        r = c.post("/api/login", json={"username": user, "password": pw})
-        assert r.status_code == 200, r.text
+        if user not in devices:
+            if user == "max":
+                code = subprocess.run([GO_BINARY, "pair-code", "-data", str(data), "-user", "max"],
+                                      capture_output=True, text=True, check=True).stdout.strip()
+            else:
+                code = admin.post("/api/devices/code", json={"username": user}).json()["code"]
+            r = c.post("/api/pair", json={"code": code, "username": user, "password": pw, "device_name": "pytest"})
+            assert r.status_code == 200, r.text
+            devices[user] = r.json()["device_key"]
+        else:
+            r = c.post("/api/login", json={"username": user, "password": pw},
+                       headers={"X-HomeDrive-Device": devices[user]})
+            assert r.status_code == 200, r.text
         c.headers["Authorization"] = "Bearer " + r.json()["token"]
+        c.headers["X-HomeDrive-Device"] = devices[user]
         return c
 
-    return proc, {"settings": None, "files": files, "backup": backup, "admin": login("max", "pw"),
+    admin = login("max", "pw")
+    api = httpx.Client(base_url=base, timeout=60, headers={"X-HomeDrive-Device": devices["max"]})
+    return proc, {"settings": None, "files": files, "backup": backup, "admin": admin,
                   "public": public, "login": login, "api": api, "go": True}
 
 

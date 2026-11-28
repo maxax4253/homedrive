@@ -83,6 +83,7 @@ jobs:
             HOMEDRIVE_PASSWORD=ci-password-123 HOMEDRIVE_PUBLIC_URL=http://127.0.0.1:18090 \
             /tmp/homedrive-core -listen 127.0.0.1:18090 2> /tmp/core.log &
           sleep 2
+          HD_PAIR_CODE=$(/tmp/homedrive-core pair-code -data /tmp/hd/data -user max) \
           HD_URL=http://127.0.0.1:18090 HD_USER=max HD_PASSWORD=ci-password-123 \
             HD_PUBLIC=http://127.0.0.1:18090 HD_DOCKER=false python selftest.py
           ! grep -q "DATA RACE" /tmp/core.log

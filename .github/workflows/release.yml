@@ -19,7 +19,7 @@ jobs:
   mac-app:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Work out the version
         id: version
@@ -55,7 +55,7 @@ jobs:
           generate_release_notes: true
 
       - name: Keep the build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: HomeDrive
           path: mac/dist/HomeDrive.zip

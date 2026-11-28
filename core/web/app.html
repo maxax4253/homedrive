@@ -160,7 +160,7 @@
         <div class="row"><span class="mono" id="d-address">—</span><button class="link" id="d-copy" hidden>Copy</button></div>
         <div>Reachable</div><div id="d-reach">—</div>
         <div>Files</div>
-        <div class="row"><span class="mono" id="d-folder"></span><button class="link" id="d-open">Open</button></div>
+        <div class="row"><span class="mono" id="d-folder"></span><button class="link" id="d-open">Open</button><button class="link" id="d-change">Change…</button></div>
         <div>Disk</div><div id="d-disk">—</div>
         <div>People</div><div id="d-people">—</div>
       </div>
@@ -237,11 +237,30 @@ function goto(n) {
   if (n === 4) newCode("w");
 }
 
-$("next1").onclick = () => {
+// A folder that already has files needs a clear yes: HomeDrive shows them and
+// can change them. Returns the confirmed flag, or null if they said no.
+function confirmExisting(r) {
+  if (!r.needs_confirm) return false;
+  const more = r.count > r.examples.length ? ", …" : "";
+  const ok = confirm("“" + r.folder + "” already has " + r.count + (r.count === 1 ? " item" : " items") +
+    " (" + r.examples.join(", ") + more + ").\n\nHomeDrive will show them, and renaming or deleting in HomeDrive changes them. " +
+    "Use this folder anyway?\n\nChoose Cancel to pick an empty or new folder instead.");
+  return ok ? true : null;
+}
+let useExisting = false;
+
+$("next1").onclick = async () => {
   const card = document.querySelector('[data-step="1"]');
   if (!$("folder").value.trim()) return showError(card, new Error("Pick a folder for your files."));
   showError(card, null);
-  goto(2);
+  try {
+    const r = await call("check-folder", { files_root: $("folder").value });
+    const yes = confirmExisting(r);
+    if (yes === null) { $("folder").focus(); $("folder").select(); return; }
+    useExisting = yes;
+    $("folder").value = r.folder;
+    goto(2);
+  } catch (e) { showError(card, e); }
 };
 $("back2").onclick = () => goto(1);
 
@@ -262,7 +281,13 @@ $("next2").onclick = async () => {
       !confirm("Your password is under 8 characters. HomeDrive can be reached from the internet, so a longer one is much safer. Use it anyway?")) return;
   $("next2").disabled = true;
   try {
-    state = await call("setup", { files_root: $("folder").value, username: $("username").value, password: $("pw1").value });
+    let body = { files_root: $("folder").value, username: $("username").value, password: $("pw1").value, use_existing: useExisting };
+    state = await call("setup", body);
+    if (state.needs_confirm) {   // the folder got files since step 1
+      const yes = confirmExisting(state);
+      if (yes === null) { goto(1); return; }
+      state = await call("setup", Object.assign(body, { use_existing: true }));
+    }
     $("pw1").value = $("pw2").value = "";
     goto(state.tailscale_status && state.tailscale_status.state !== "off" ? 3 : 4);
   } catch (e) {
@@ -280,7 +305,10 @@ async function pollTailscale() {
     try {
       state = await call("state");
       const ts = state.tailscale_status || {};
-      $("ts-wait").hidden = !(ts.state === "starting" || (ts.state === "needs_login" && !state.needs_tailscale_login));
+      $("ts-wait").hidden = !(ts.state === "starting" || ts.state === "certificate" || (ts.state === "needs_login" && !state.needs_tailscale_login));
+      $("ts-wait").innerHTML = ts.state === "certificate"
+        ? '<span class="spin"></span> Connected. Getting a security certificate for your address (can take a minute)…'
+        : '<span class="spin"></span> Starting…';
       $("ts-login").hidden = !state.needs_tailscale_login;
       $("ts-approve").hidden = ts.state !== "needs_approval";
       $("ts-err").hidden = ts.state !== "error";
@@ -348,6 +376,7 @@ function fillDash(s) {
   else if (ts.state === "needs_approval") { pill = ["wait", "Waiting"]; reach = "Only this computer"; note = "Approve the device “homedrive” in the Tailscale admin console."; }
   else if (ts.state === "error") { pill = ["bad", "Tailscale problem"]; reach = "Only this computer"; note = ts.error; }
   else if (ts.state === "off") { reach = "Only this computer"; }
+  else if (ts.state === "certificate") { pill = ["wait", "Almost ready"]; reach = "…"; note = "Getting a security certificate for your address. This can take a minute."; }
   else { pill = ["wait", "Starting"]; reach = "…"; }
   $("d-pill").className = "pill " + pill[0];
   $("d-pill").textContent = pill[1];
@@ -363,6 +392,20 @@ $("d-copy").onclick = async () => {
   setTimeout(() => { $("d-copy").textContent = "Copy"; }, 1500);
 };
 $("d-open").onclick = () => call("open-folder", {}).catch((e) => alert(e.message));
+$("d-change").onclick = async () => {
+  const typed = prompt("Which folder should HomeDrive use from now on? (Nothing is moved or deleted: the current folder stays as it is.)", state.files_root);
+  if (!typed || typed.trim() === state.files_root) return;
+  try {
+    let r = await call("folder", { files_root: typed });
+    if (r.needs_confirm) {
+      if (confirmExisting(r) === null) return;
+      r = await call("folder", { files_root: typed, use_existing: true });
+    }
+    $("d-pill").className = "pill wait";
+    $("d-pill").textContent = "Restarting…";
+    $("d-folder").textContent = r.files_root;
+  } catch (e) { alert(e.message); }
+};
 $("d-login").onclick = () => call("open-login", {}).catch((e) => alert(e.message));
 $("d-newcode").onclick = () => newCode("d");
 $("d-upd-check").onclick = async () => {

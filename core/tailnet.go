@@ -110,6 +110,14 @@ func (t *tailnet) run(ctx context.Context, handler http.Handler) {
 	}
 
 	address := "https://" + domain
+	// Get the https certificate now: otherwise the first device to connect
+	// waits a minute or more while it's issued.
+	t.set(func(s *TailnetStatus) { s.State = "certificate" })
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	if _, _, err := lc.CertPair(cctx, domain); err != nil {
+		log.Printf("Tailscale: couldn't get the https certificate yet (%v); it'll be fetched on first use", err)
+	}
+	cancel()
 	ln, funnelErr := net.Listener(nil), error(nil)
 	if cfg.Funnel {
 		ln, funnelErr = ts.ListenFunnel("tcp", ":443")

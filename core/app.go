@@ -92,12 +92,58 @@ func defaultDataDir() string {
 	return filepath.Join(base, "HomeDrive Server")
 }
 
+// defaultFilesRoot suggests a folder that's new or empty. (On a Mac "HomeDrive"
+// and "homedrive" are the same folder, so an existing one is easy to hit.)
 func defaultFilesRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "HomeDrive")
+	for _, name := range []string{"HomeDrive", "HomeDrive Files", "HomeDrive Files 2", "HomeDrive Files 3"} {
+		p := filepath.Join(home, name)
+		if len(folderContents(p, 1)) == 0 {
+			return p
+		}
+	}
+	return filepath.Join(home, "HomeDrive Files "+randomHex(2))
+}
+
+// folderContents lists up to max visible things already in a folder (nil if
+// it's missing or empty). Hidden files like .DS_Store don't count.
+func folderContents(p string, max int) []string {
+	entries, err := os.ReadDir(p)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") { // hidden, including HomeDrive's own .trash
+			continue
+		}
+		names = append(names, e.Name())
+		if len(names) >= max {
+			break
+		}
+	}
+	return names
+}
+
+// countVisible counts the visible things in a folder (up to 10000).
+func countVisible(p string) int {
+	return len(folderContents(p, 10000))
+}
+
+// existingFolderCheck: a folder that already has files needs a yes first, since
+// HomeDrive will show them and can change them.
+func existingFolderCheck(root string, confirmed bool) map[string]any {
+	if confirmed {
+		return nil
+	}
+	names := folderContents(root, 5)
+	if len(names) == 0 {
+		return nil
+	}
+	return map[string]any{"needs_confirm": true, "folder": root, "count": countVisible(root), "examples": names}
 }
 
 var nonUsername = regexp.MustCompile(`[^a-z0-9_.-]+`)
@@ -245,6 +291,26 @@ func (a *App) Handler() http.Handler {
 		}
 		return nil, fail(409, "There's no Tailscale sign-in waiting.")
 	})))
+	mux.HandleFunc("POST /app/api/folder", a.only(a.api(a.changeFolder)))
+	mux.HandleFunc("POST /app/api/check-folder", a.only(a.api(func(r *http.Request) (any, error) {
+		var body struct {
+			FilesRoot string `json:"files_root"`
+		}
+		if err := decode(r, &body); err != nil {
+			return nil, err
+		}
+		root, err := cleanFolder(body.FilesRoot)
+		if err != nil {
+			return nil, fail(400, err.Error())
+		}
+		if within(root, a.dataDir) || within(a.dataDir, root) {
+			return nil, fail(400, "Pick a different folder: that one is where HomeDrive keeps its own settings.")
+		}
+		if ask := existingFolderCheck(root, false); ask != nil {
+			return ask, nil
+		}
+		return map[string]any{"folder": root}, nil
+	})))
 	mux.HandleFunc("POST /app/api/update-check", a.only(a.api(func(r *http.Request) (any, error) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
@@ -373,6 +439,8 @@ func (a *App) setup(r *http.Request) (any, error) {
 		Username  string `json:"username"`
 		Password  string `json:"password"`
 		Tailscale *bool  `json:"tailscale"`
+		// The folder already has files and the person said to use it anyway.
+		UseExisting bool `json:"use_existing"`
 	}
 	if err := decode(r, &body); err != nil {
 		return nil, err
@@ -390,6 +458,10 @@ func (a *App) setup(r *http.Request) (any, error) {
 	}
 	if body.Password == "" {
 		return nil, fail(400, "Pick a password.")
+	}
+	if ask := existingFolderCheck(root, body.UseExisting); ask != nil {
+		a.setupTries-- // a question, not a failed try
+		return ask, nil
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fail(400, "Can't use that folder: "+err.Error())
@@ -422,6 +494,63 @@ func (a *App) setup(r *http.Request) (any, error) {
 		}
 	}
 	return a.state(), nil
+}
+
+// changeFolder points HomeDrive at another folder and restarts it. Nothing is
+// moved or deleted: the old folder stays as it is.
+func (a *App) changeFolder(r *http.Request) (any, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.settings.Load()
+	if s == nil {
+		return nil, fail(409, "Finish setting up first.")
+	}
+	var body struct {
+		FilesRoot   string `json:"files_root"`
+		UseExisting bool   `json:"use_existing"`
+	}
+	if err := decode(r, &body); err != nil {
+		return nil, err
+	}
+	root, err := cleanFolder(body.FilesRoot)
+	if err != nil {
+		return nil, fail(400, err.Error())
+	}
+	if within(root, a.dataDir) || within(a.dataDir, root) {
+		return nil, fail(400, "Pick a different folder: that one is where HomeDrive keeps its own settings.")
+	}
+	if strings.EqualFold(root, s.FilesRoot) {
+		return nil, fail(400, "HomeDrive already uses that folder.")
+	}
+	if ask := existingFolderCheck(root, body.UseExisting); ask != nil {
+		return ask, nil
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fail(400, "Can't use that folder: "+err.Error())
+	}
+	next := *s
+	next.FilesRoot = root
+	b, _ := json.MarshalIndent(&next, "", "  ")
+	if err := writeAtomic(filepath.Join(a.dataDir, appSettings), b, 0o600); err != nil {
+		return nil, err
+	}
+	a.settings.Store(&next)
+	log.Printf("files folder changed from %s to %s", s.FilesRoot, root)
+	if a.restart != nil {
+		go func() {
+			time.Sleep(500 * time.Millisecond) // let this answer reach the page first
+			exe, err := os.Executable()
+			if err != nil {
+				return
+			}
+			args := os.Args[1:]
+			if len(args) == 0 {
+				args = []string{"app"}
+			}
+			a.restart(exec.Command(exe, args...))
+		}()
+	}
+	return map[string]any{"ok": true, "restarting": a.restart != nil, "files_root": root}, nil
 }
 
 // cleanFolder turns what was typed into a full folder path ("~/HomeDrive" works).

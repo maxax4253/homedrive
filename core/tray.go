@@ -143,6 +143,8 @@ func trayStatus(a *App) (string, bool) {
 		return "Needs Tailscale sign-in", true
 	case "needs_approval":
 		return "Waiting for Tailscale approval", true
+	case "certificate":
+		return "Almost ready (getting a certificate)", true
 	case "error":
 		return "Tailscale problem (open HomeDrive)", true
 	}

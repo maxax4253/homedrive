@@ -11,7 +11,7 @@ import (
 
 // TailnetStatus is what the built-in Tailscale is up to.
 type TailnetStatus struct {
-	// off, starting, needs_login, needs_approval, running, error
+	// off, starting, needs_login, needs_approval, certificate, running, error
 	State       string  `json:"state"`
 	LoginURL    string  `json:"login_url,omitempty"`    // open this to connect HomeDrive to Tailscale
 	Address     string  `json:"address,omitempty"`      // https://homedrive.<tailnet>.ts.net
@@ -52,6 +52,8 @@ func statusCommand(args []string) {
 		fmt.Printf("Connect HomeDrive to Tailscale by opening:\n  %s\n", s.LoginURL)
 	case "needs_approval":
 		fmt.Println("Waiting for approval in the Tailscale admin console.")
+	case "certificate":
+		fmt.Println("Connected. Getting the https certificate (can take a minute)…")
 	case "running":
 		fmt.Printf("HomeDrive is at %s\n", s.Address)
 		if s.Funnel {

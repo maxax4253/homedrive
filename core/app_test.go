@@ -217,3 +217,74 @@ func TestDefaultUsernameIsValid(t *testing.T) {
 		t.Fatalf("%q", defaultUsername())
 	}
 }
+
+// The bug found on a real Mac: ~/HomeDrive was the person's code folder
+// (~/homedrive; Mac folder names ignore case). Setup must ask before using it.
+func TestSetupAsksBeforeUsingAFolderWithFiles(t *testing.T) {
+	a, c := testApp(t)
+	c.open(a)
+	busy := filepath.Join(t.TempDir(), "homedrive")
+	_ = os.MkdirAll(filepath.Join(busy, "mac"), 0o755)
+	_ = os.WriteFile(filepath.Join(busy, "README.md"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(busy, ".DS_Store"), []byte("x"), 0o644)
+
+	_, out := c.req("POST", "/app/api/check-folder", map[string]string{"files_root": busy}, nil)
+	if out["needs_confirm"] != true || out["count"].(float64) != 2 {
+		t.Fatalf("check-folder: %v", out)
+	}
+	body := map[string]any{"files_root": busy, "username": "max", "password": "longpassword"}
+	st, out := c.req("POST", "/app/api/setup", body, nil)
+	if st != 200 || out["needs_confirm"] != true || a.SetupDone() {
+		t.Fatalf("setup went ahead without asking: %d %v", st, out)
+	}
+	body["use_existing"] = true
+	if st, out := c.req("POST", "/app/api/setup", body, nil); st != 200 || out["setup_done"] != true {
+		t.Fatalf("setup after yes: %d %v", st, out)
+	}
+	// An empty or new folder needs no question.
+	_, out = c.req("POST", "/app/api/check-folder", map[string]string{"files_root": t.TempDir()}, nil)
+	if out["needs_confirm"] != nil {
+		t.Fatalf("empty folder: %v", out)
+	}
+}
+
+func TestSuggestedFolderIsNeverOneWithFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got := defaultFilesRoot(); got != filepath.Join(home, "HomeDrive") {
+		t.Fatalf("fresh home: %s", got)
+	}
+	_ = os.MkdirAll(filepath.Join(home, "HomeDrive", "code"), 0o755)
+	if got := defaultFilesRoot(); got != filepath.Join(home, "HomeDrive Files") {
+		t.Fatalf("with a busy HomeDrive: %s", got)
+	}
+}
+
+func TestChangeFolder(t *testing.T) {
+	a, c := testApp(t)
+	c.open(a)
+	old := filepath.Join(t.TempDir(), "old")
+	c.req("POST", "/app/api/setup", map[string]string{"files_root": old, "username": "max", "password": "longpassword"}, nil)
+	_ = os.WriteFile(filepath.Join(old, "keep.txt"), []byte("x"), 0o644)
+
+	busy := t.TempDir()
+	_ = os.WriteFile(filepath.Join(busy, "a.txt"), []byte("x"), 0o644)
+	if _, out := c.req("POST", "/app/api/folder", map[string]any{"files_root": busy}, nil); out["needs_confirm"] != true {
+		t.Fatalf("no question for a folder with files: %v", out)
+	}
+	if a.settings.Load().FilesRoot != old {
+		t.Fatal("changed without a yes")
+	}
+	fresh := filepath.Join(t.TempDir(), "new")
+	st, out := c.req("POST", "/app/api/folder", map[string]any{"files_root": fresh}, nil)
+	if st != 200 || out["files_root"] != fresh || a.settings.Load().FilesRoot != fresh {
+		t.Fatalf("change: %d %v", st, out)
+	}
+	if _, err := os.Stat(filepath.Join(old, "keep.txt")); err != nil {
+		t.Fatal("the old folder's files were touched")
+	}
+	b, _ := NewApp(context.Background(), a.dataDir, a.listen)
+	if b.settings.Load().FilesRoot != fresh {
+		t.Fatal("new folder not saved")
+	}
+}

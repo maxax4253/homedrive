@@ -50,6 +50,9 @@ final class DriveModel {
     var serverURL: String = UserDefaults.standard.string(forKey: "serverURL") ?? ""
     var username: String = UserDefaults.standard.string(forKey: "username") ?? ""
     var password = ""
+    /// Shown on the sign-in screen when the server wants this Mac paired first.
+    var pairingCode = ""
+    var needsPairingCode = false
     private(set) var isLoggedIn = false
     private(set) var api: APIClient?
 
@@ -136,6 +139,12 @@ final class DriveModel {
     var serverUpdating = false
     var checkingServerUpdate = false
 
+    // Devices (servers that only let in paired devices)
+    var serverPairing = false
+    var devices: [DeviceInfo] = []
+    var removingDevice: DeviceInfo?
+    var shownPairingCode: PairingCode?
+
     // Admin: people, backups and the share links switch
     var linksStatus: LinksStatus?
     var linksSwitchBusy = false
@@ -162,7 +171,8 @@ final class DriveModel {
     init() {
         if let url = URL(string: serverURL), !serverURL.isEmpty,
            let token = TokenStore.load(account: serverURL) {
-            api = APIClient(baseURL: url, token: token)
+            api = APIClient(baseURL: url, token: token,
+                            deviceKey: TokenStore.load(account: TokenStore.deviceAccount(server: serverURL, user: username)))
             isLoggedIn = true
             offline.configure(account: accountKey)
         }
@@ -256,13 +266,32 @@ final class DriveModel {
             return
         }
         serverURL = text
-        let client = APIClient(baseURL: url)
+        let deviceAccount = TokenStore.deviceAccount(server: text, user: username)
+        let code = PairingCode.clean(pairingCode)
+        let client = APIClient(baseURL: url, deviceKey: code.isEmpty ? TokenStore.load(account: deviceAccount) : nil)
         busyMessage = "Signing in…"
         defer { busyMessage = nil }
         do {
-            let result = try await client.login(username: username, password: password)
+            let result: LoginResponse
+            if !code.isEmpty {
+                // First time on this server: pair this Mac with the code.
+                let paired = try await client.pair(code: code, username: username, password: password,
+                                                   deviceName: Self.thisMacName)
+                TokenStore.save(paired.deviceKey, account: deviceAccount)
+                client.deviceKey = paired.deviceKey
+                result = LoginResponse(token: paired.token, username: paired.username)
+            } else {
+                if client.deviceKey == nil, let info = try? await client.serverInfo(), info.pairing == true {
+                    needsPairingCode = true
+                    errorMessage = "This Mac needs to be paired with your HomeDrive first. Enter the 6-digit pairing code."
+                    return
+                }
+                result = try await client.login(username: username, password: password)
+            }
             client.token = result.token
             TokenStore.save(result.token, account: text)
+            needsPairingCode = false
+            pairingCode = ""
             UserDefaults.standard.set(text, forKey: "serverURL")
             UserDefaults.standard.set(username, forKey: "username")
             api = client
@@ -274,6 +303,10 @@ final class DriveModel {
             section = .drive
             path = ""
             await refresh()
+        } catch let error as APIError where error.needsPairing {
+            TokenStore.delete(account: deviceAccount)   // removed on the server: pair again
+            needsPairingCode = true
+            errorMessage = code.isEmpty ? "This Mac needs to be paired with your HomeDrive. Enter the 6-digit pairing code." : error.message
         } catch {
             errorMessage = friendly(error)
         }
@@ -295,6 +328,7 @@ final class DriveModel {
         isAdmin = false
         users = []
         shareLinks = []
+        devices = []
         backupStatus = nil
         editing.stopAll()
     }
@@ -302,7 +336,15 @@ final class DriveModel {
     /// A 401 means the saved login no longer works (expired, password reset, or a
     /// server update). Send the user back to the sign-in screen instead of failing quietly.
     func signOutIfExpired(_ error: Error) {
-        guard let api = error as? APIError, api.status == 401, isLoggedIn else { return }
+        guard let api = error as? APIError, isLoggedIn else { return }
+        if api.needsPairing {
+            forgetDeviceKey()
+            logout()
+            needsPairingCode = true
+            errorMessage = "This Mac was removed from your HomeDrive. Get a new pairing code to use it again."
+            return
+        }
+        guard api.status == 401 else { return }
         logout()
         errorMessage = "Your login expired. Please sign in again; nothing was deleted from your Mac."
     }
@@ -340,9 +382,14 @@ final class DriveModel {
                 case .admin:
                     users = (try? await api.users()) ?? []
                     backupStatus = try? await api.backupStatus()
+                    serverPairing = (try? await api.serverInfo())?.pairing ?? false
                     entries = []
                 case .settings:
-                    serverVersion = try? await api.serverVersion()
+                    if let info = try? await api.serverInfo() {
+                        serverVersion = info.version
+                        serverPairing = info.pairing ?? false
+                    }
+                    if serverPairing { devices = (try? await api.devices()) ?? devices }
                     if isAdmin { linksStatus = try? await api.linksStatus() }
                     entries = []
                 case .trash:
@@ -357,7 +404,7 @@ final class DriveModel {
                 backupsEnabled = me.backupsEnabled ?? false
                 if section == .admin && !isAdmin { section = .drive }
             }
-        } catch let error as APIError where error.status == 401 {
+        } catch let error as APIError where error.status == 401 || error.needsPairing {
             signOutIfExpired(error)
         } catch let error as APIError where error.status == 404 && section == .drive && !path.isEmpty {
             path = ""

@@ -98,3 +98,31 @@ final class SyncRulesTests: XCTestCase {
         XCTAssertFalse(SyncRules.isLocalDeletion(remote: r, local: nil, baseline: nil))
     }
 }
+
+final class PairingTests: XCTestCase {
+    func testCodeCleanup() {
+        XCTAssertEqual(PairingCode.clean("123 456"), "123456")
+        XCTAssertEqual(PairingCode.clean(" 12-34-56 "), "123456")
+        XCTAssertEqual(PairingCode.clean("1234567"), "123456")
+        XCTAssertEqual(PairingCode.clean("١٢٣"), "")   // only plain digits
+        XCTAssertEqual(PairingCode.clean(""), "")
+    }
+
+    func testNeedsPairing() {
+        XCTAssertTrue(APIError(message: "This device isn't paired with this HomeDrive yet. Get a code.", status: 403).needsPairing)
+        XCTAssertFalse(APIError(message: "Only the admin can do that", status: 403).needsPairing)
+        XCTAssertFalse(APIError(message: "This device isn't paired", status: 401).needsPairing)
+    }
+
+    func testDeviceKeysAreSeparatePerAccount() {
+        XCTAssertNotEqual(TokenStore.deviceAccount(server: "http://a:8090", user: "max"),
+                          TokenStore.deviceAccount(server: "http://a:8090", user: "mom"))
+        XCTAssertEqual(TokenStore.deviceAccount(server: "http://a:8090", user: "Max "),
+                       TokenStore.deviceAccount(server: "http://a:8090", user: "max"))
+    }
+
+    func testSpacedCode() throws {
+        let c = try JSONDecoder().decode(PairingCode.self, from: Data(#"{"code":"123456","username":"max","expires":1}"#.utf8))
+        XCTAssertEqual(c.spaced, "123 456")
+    }
+}

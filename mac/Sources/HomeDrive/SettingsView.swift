@@ -38,6 +38,10 @@ struct SettingsScreen: View {
                         }
                     }
 
+                    if model.serverPairing {
+                        DevicesGroup()
+                    }
+
                     SettingsGroup(title: "Offline") {
                         SettingsRow(icon: "arrow.triangle.2.circlepath",
                                     title: "~/HomeDrive Offline",

@@ -11,6 +11,8 @@ struct APIError: LocalizedError {
 final class APIClient {
     let baseURL: URL
     var token: String?
+    /// This device's pairing key, for servers that only let in paired devices.
+    var deviceKey: String?
 
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
@@ -19,9 +21,10 @@ final class APIClient {
         return URLSession(configuration: config)
     }()
 
-    init(baseURL: URL, token: String? = nil) {
+    init(baseURL: URL, token: String? = nil, deviceKey: String? = nil) {
         self.baseURL = baseURL
         self.token = token
+        self.deviceKey = deviceKey
     }
 
     // MARK: - Requests
@@ -34,6 +37,7 @@ final class APIClient {
         var req = URLRequest(url: comps.url!)
         req.httpMethod = method
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let deviceKey { req.setValue(deviceKey, forHTTPHeaderField: "X-HomeDrive-Device") }
         return req
     }
 

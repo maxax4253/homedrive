@@ -8,6 +8,7 @@ struct FeatureSheets: ViewModifier {
     func body(content: Content) -> some View {
         @Bindable var model = model
         content
+            .modifier(PairingCodeAlert())
             .sheet(isPresented: shareBinding) { ShareSheet() }
             .sheet(isPresented: versionsBinding) { VersionsSheet() }
             .sheet(isPresented: $model.showAddUser) { AddUserSheet() }
@@ -652,6 +653,11 @@ struct UserRow: View {
                 if !user.isAdmin {
                     Menu {
                         Button("Reset password…") { model.resettingUser = user }
+                        if model.serverPairing {
+                            Button("Pairing code for a new device…") {
+                                Task { await model.makePairingCode(for: user.username) }
+                            }
+                        }
                         Button("Storage limit…") {
                             model.quotaText = user.quota.map { String(format: "%g", Double($0) / 1_073_741_824) } ?? ""
                             model.quotaUser = user

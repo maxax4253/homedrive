@@ -19,6 +19,10 @@ struct LoginView: View {
                 TextField("Username", text: $model.username)
                 SecureField("Password", text: $model.password)
                     .onSubmit(signIn)
+                if model.needsPairingCode {
+                    TextField("Pairing code", text: $model.pairingCode, prompt: Text("123 456"))
+                        .onSubmit(signIn)
+                }
             }
             .formStyle(.grouped)
             .frame(maxWidth: 380)
@@ -35,6 +39,14 @@ struct LoginView: View {
             .keyboardShortcut(.defaultAction)
             .controlSize(.large)
             .disabled(!canSignIn)
+
+            if model.needsPairingCode {
+                Text("Get a code on a device that's already signed in (Settings → Devices), or on the server computer.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -42,6 +54,7 @@ struct LoginView: View {
 
     private var canSignIn: Bool {
         !model.serverURL.isEmpty && !model.username.isEmpty && !model.password.isEmpty && model.busyMessage == nil
+            && (!model.needsPairingCode || PairingCode.clean(model.pairingCode).count == 6)
     }
 
     private func signIn() {

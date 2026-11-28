@@ -171,7 +171,7 @@ type pairCode struct {
 type Pairing struct {
 	dir     string
 	mu      sync.Mutex
-	guesses int // wrong codes since the last code was made
+	guesses int // wrong codes since open codes were last cancelled
 }
 
 func OpenPairing(dataDir string) *Pairing {

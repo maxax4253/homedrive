@@ -54,7 +54,7 @@ struct LoginView: View {
 
     private var canSignIn: Bool {
         !model.serverURL.isEmpty && !model.username.isEmpty && !model.password.isEmpty && model.busyMessage == nil
-            && (!model.needsPairingCode || PairingCode.clean(model.pairingCode).count == 6)
+            && [0, 6].contains(PairingCode.clean(model.pairingCode).count)
     }
 
     private func signIn() {

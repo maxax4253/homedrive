@@ -29,6 +29,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -69,8 +70,11 @@ type App struct {
 	drive    atomic.Pointer[Server]
 	handler  atomic.Value // http.Handler of the running drive
 
-	mu               sync.Mutex // one setup at a time
-	setupTries       int
+	mu         sync.Mutex // one setup at a time
+	setupTries int
+	updates    updater
+	restart    func(*exec.Cmd) // quit, start the new version, exit
+
 	noTailscale      bool // tests: never contact Tailscale
 	autostartOnSetup bool // the real app: start with the computer from the beginning
 }
@@ -120,6 +124,11 @@ func NewApp(ctx context.Context, dataDir, listen string) (*App, error) {
 		return nil, err
 	}
 	a := &App{dataDir: mustAbs(dataDir), listen: listen, token: randomToken(24), ctx: ctx}
+	// After an update the new copy keeps the old one's secret, so the open page keeps working.
+	if t := os.Getenv("HOMEDRIVE_APP_TOKEN"); len(t) >= 24 {
+		a.token = t
+		_ = os.Unsetenv("HOMEDRIVE_APP_TOKEN")
+	}
 	if b, err := os.ReadFile(filepath.Join(a.dataDir, appSettings)); err == nil {
 		var s AppSettings
 		if err := json.Unmarshal(b, &s); err != nil {
@@ -236,6 +245,21 @@ func (a *App) Handler() http.Handler {
 		}
 		return nil, fail(409, "There's no Tailscale sign-in waiting.")
 	})))
+	mux.HandleFunc("POST /app/api/update-check", a.only(a.api(func(r *http.Request) (any, error) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		a.updates.check(ctx)
+		return a.updates.info(), nil
+	})))
+	mux.HandleFunc("POST /app/api/update", a.only(a.api(func(r *http.Request) (any, error) {
+		if a.restart == nil {
+			return nil, fail(409, "Updating isn't possible in this copy of HomeDrive.")
+		}
+		if err := a.startUpdate(); err != nil {
+			return nil, fail(409, err.Error())
+		}
+		return a.updates.info(), nil
+	})))
 	mux.HandleFunc("/app/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 
 	// Everything else is the drive itself (the same API the apps use, still
@@ -309,7 +333,7 @@ func (a *App) api(h func(*http.Request) (any, error)) http.HandlerFunc {
 }
 
 func (a *App) state() map[string]any {
-	out := map[string]any{"version": Version, "setup_done": a.SetupDone(), "autostart": autostartOn(),
+	out := map[string]any{"version": Version, "setup_done": a.SetupDone(), "autostart": autostartOn(), "update": a.updates.info(),
 		"tailscale_built_in": tailscaleBuilt, "data_dir": a.dataDir, "local_address": "http://" + a.listen}
 	s := a.settings.Load()
 	if s == nil {
@@ -445,15 +469,23 @@ func runApp(args []string) {
 	_ = f.Parse(args)
 
 	logToFile(*data)
+	cleanOldUpdate(*data)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	afterUpdate := os.Getenv("HOMEDRIVE_APP_TOKEN") != ""
 	a, err := NewApp(ctx, *data, *listen)
 	if err != nil {
 		fatalBox(err)
 	}
 	a.autostartOnSetup = true
-	ln, err := net.Listen("tcp", *listen)
+	var ln net.Listener
+	for i := 0; ; i++ { // right after an update the old copy may still be letting go
+		if ln, err = net.Listen("tcp", *listen); err == nil || !afterUpdate || i == 40 {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 	if err != nil {
 		// Probably already running: show the running one instead of a second copy.
 		if b, rerr := os.ReadFile(filepath.Join(*data, appURLFile)); rerr == nil {
@@ -483,13 +515,30 @@ func runApp(args []string) {
 		defer cancel()
 		_ = hs.Shutdown(sctx)
 	}
+	// While restarting after an update, the shutdown below must not end the
+	// program before the new copy has been started.
+	var restarting sync.Mutex
+	a.restart = func(cmd *exec.Cmd) {
+		restarting.Lock() // held until os.Exit
+		quit()
+		time.Sleep(time.Second) // let Tailscale and open files close
+		cmd.Env = append(os.Environ(), "HOMEDRIVE_APP_TOKEN="+a.token)
+		if err := cmd.Start(); err != nil {
+			log.Printf("couldn't start the new version: %v", err)
+			showError("HomeDrive updated", "Open HomeDrive again to finish updating.")
+		}
+		os.Exit(0)
+	}
+	a.watchForUpdates()
 	if *noTray || !trayAvailable() {
 		fmt.Printf("HomeDrive is running. Open this link on this computer to set it up or see how it's doing:\n  %s\n", a.OpenURL())
 		<-ctx.Done()
 		quit()
+		restarting.Lock()
 		return
 	}
 	runTray(ctx, a, quit) // returns when "Quit" is chosen
+	restarting.Lock()
 }
 
 // openCommand: `homedrive-server open` opens the running app's page.

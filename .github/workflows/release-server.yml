@@ -1,0 +1,129 @@
+# Builds the HomeDrive server app for every system and publishes it as a GitHub
+# Release that people download (and that the app updates itself from).
+#
+# To release: push a tag like server-v1.0.0, or run this by hand from the
+# Actions tab with a version. Every run also keeps the builds as artifacts.
+name: Release server app
+
+on:
+  push:
+    tags: ["server-v*"]
+    branches: ["build-*"] # try the builds without publishing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.0.0). Leave empty to only build."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - id: v
+        env:
+          REF: ${{ github.ref_name }}
+          INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "$REF" == server-v* ]]; then v="${REF#server-v}"; publish=true
+          elif [ -n "$INPUT" ]; then v="$INPUT"; publish=true
+          else v="0.0.0-build.${GITHUB_RUN_NUMBER}"; publish=false; fi
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then echo "Bad version: $v"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  windows-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod
+      - name: Build
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          cd core
+          mkdir -p ../dist
+          flags="-s -w -X main.Version=$V"
+          for arch in amd64 arm64; do
+            name=$([ $arch = amd64 ] && echo x64 || echo arm64)
+            # Windows: no console window; it lives in the tray.
+            dir=$(mktemp -d)
+            GOOS=windows GOARCH=$arch go build -trimpath -ldflags "$flags -H windowsgui" -o "$dir/HomeDrive Server.exe" .
+            (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/HomeDrive-Server-windows-$name.zip" "HomeDrive Server.exe")
+            # Linux
+            dir=$(mktemp -d)
+            GOOS=linux GOARCH=$arch go build -trimpath -ldflags "$flags" -o "$dir/homedrive-server" .
+            tar -C "$dir" -czf "../dist/HomeDrive-Server-linux-$name.tar.gz" homedrive-server
+          done
+          ls -lh ../dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-windows-linux
+          path: dist/*
+
+  mac:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod
+      - name: Build HomeDrive Server.app (Apple silicon + Intel)
+        env:
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          cd core
+          for arch in arm64 amd64; do
+            CGO_ENABLED=1 GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.Version=$V" -o /tmp/hd-$arch .
+          done
+          APP="/tmp/out/HomeDrive Server.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/homedrive-server" /tmp/hd-arm64 /tmp/hd-amd64
+          iconutil -c icns ../mac/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+          sed "s/__VERSION__/$V/g" packaging/Info.plist > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"   # ad-hoc (free) signature
+          mkdir -p ../dist
+          ditto -c -k --keepParent "$APP" ../dist/HomeDrive-Server-mac.zip
+          ls -lh ../dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-mac
+          path: dist/*
+
+  publish:
+    needs: [version, windows-linux, mac]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Fingerprints
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "server-v$V" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "HomeDrive Server $V" \
+            --notes "Download the one for your computer, open it, and follow the setup page.
+
+          - **Mac:** HomeDrive-Server-mac.zip (Apple silicon and Intel). The first time, right-click the app and choose Open.
+          - **Windows:** HomeDrive-Server-windows-x64.zip (most PCs) or -arm64. If Windows warns about an unknown app, choose More info → Run anyway.
+          - **Linux:** HomeDrive-Server-linux-x64.tar.gz or -arm64, then run ./homedrive-server
+
+          SHA256SUMS has each file's fingerprint."

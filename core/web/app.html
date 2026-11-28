@@ -185,6 +185,12 @@
           <div class="hint">So your files are always reachable.</div></div>
         <input type="checkbox" id="d-autostart" role="switch" aria-label="Start when this computer starts">
       </div>
+      <div class="switch" style="margin-top:18px">
+        <div><div style="font-weight:500" id="d-ver">Version</div>
+          <div class="hint" id="d-upd">—</div></div>
+        <div class="row"><span class="spin" id="d-upd-spin" hidden></span>
+          <button id="d-upd-check">Check for updates</button><button class="primary" id="d-upd-go" hidden>Update now</button></div>
+      </div>
       <p style="margin:18px 0 0;font-size:13px">Manage people, share links and devices from the HomeDrive app on any device signed in as the admin.</p>
     </div>
   </section>
@@ -324,6 +330,14 @@ function fillDash(s) {
     " · " + (s.devices || 0) + (s.devices === 1 ? " device" : " devices");
   if (s.disk) $("d-disk").textContent = fmtSize(s.disk.free) + " free of " + fmtSize(s.disk.total);
   $("d-autostart").checked = !!s.autostart;
+  const u = s.update || {};
+  $("d-ver").textContent = "HomeDrive " + s.version;
+  $("d-upd").textContent = u.busy ? u.status
+    : u.available ? "Version " + u.available + " is available."
+    : u.status || u.error || (u.checked ? "You're up to date." : "Checks for updates every day.");
+  $("d-upd-go").hidden = !u.available || u.busy;
+  $("d-upd-check").hidden = !!u.available || u.busy;
+  $("d-upd-spin").hidden = !u.busy;
 
   let pill = ["ok", "Running"], reach = "", note = "";
   if (!s.running) { pill = ["bad", "Not running"]; note = "HomeDrive couldn't start. Check the log in " + s.data_dir + "."; }
@@ -351,6 +365,17 @@ $("d-copy").onclick = async () => {
 $("d-open").onclick = () => call("open-folder", {}).catch((e) => alert(e.message));
 $("d-login").onclick = () => call("open-login", {}).catch((e) => alert(e.message));
 $("d-newcode").onclick = () => newCode("d");
+$("d-upd-check").onclick = async () => {
+  $("d-upd-spin").hidden = false;
+  try { state.update = await call("update-check", {}); fillDash(state); }
+  catch (e) { $("d-upd").textContent = e.message; }
+  finally { $("d-upd-spin").hidden = true; }
+};
+$("d-upd-go").onclick = async () => {
+  if (!confirm("HomeDrive restarts to update. Your devices lose connection for a moment. Update now?")) return;
+  try { state.update = await call("update", {}); fillDash(state); }
+  catch (e) { alert(e.message); }
+};
 $("d-autostart").onchange = async (e) => {
   try { await call("autostart", { on: e.target.checked }); }
   catch (err) { e.target.checked = !e.target.checked; alert(err.message); }

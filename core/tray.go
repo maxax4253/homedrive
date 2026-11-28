@@ -59,6 +59,8 @@ func trayReady(ctx context.Context, a *App) {
 	open := systray.AddMenuItem("Open HomeDrive…", "Status, settings and pairing codes")
 	pairItem := systray.AddMenuItem("Pair a device…", "Get a code to sign in on a new device")
 	folder := systray.AddMenuItem("Open files folder", "")
+	update := systray.AddMenuItem("Update available…", "Install the new version of HomeDrive")
+	update.Hide()
 	systray.AddSeparator()
 	autostart := systray.AddMenuItemCheckbox("Start when this computer starts", "", autostartOn())
 	quitItem := systray.AddMenuItem("Quit HomeDrive", "Your devices can't reach your files while it's closed")
@@ -72,6 +74,12 @@ func trayReady(ctx context.Context, a *App) {
 		} else {
 			pairItem.Disable()
 			folder.Disable()
+		}
+		if rel := a.updates.available(); rel != nil {
+			update.SetTitle("Update to version " + rel.Version + "…")
+			update.Show()
+		} else {
+			update.Hide()
 		}
 		if autostartOn() {
 			autostart.Check()
@@ -95,6 +103,8 @@ func trayReady(ctx context.Context, a *App) {
 				_ = openInSystem(a.OpenURL())
 			case <-pairItem.ClickedCh:
 				_ = openInSystem(a.OpenURL()) // the dashboard has the pairing code button
+			case <-update.ClickedCh:
+				_ = openInSystem(a.OpenURL()) // the page asks first and shows progress
 			case <-folder.ClickedCh:
 				if s := a.settings.Load(); s != nil {
 					_ = openInSystem(s.FilesRoot)

@@ -20,7 +20,7 @@ jobs:
       - name: Fetch and check libraries
         run: |
           cd core
-          go get tailscale.com@latest
+          go get tailscale.com@latest fyne.io/systray@latest
           go mod tidy
           go mod verify
           go vet ./...

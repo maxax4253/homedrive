@@ -101,20 +101,23 @@ func loadConfig(args []string) (*Config, error) {
 	}
 	_ = os.Chmod(c.DataDir, 0o700)
 
-	// The signing secret survives restarts so logins stay valid.
 	c.Secret = os.Getenv("HOMEDRIVE_SECRET")
 	if c.Secret == "" {
-		keyFile := filepath.Join(c.DataDir, "secret.key")
-		if b, err := os.ReadFile(keyFile); err == nil {
-			c.Secret = strings.TrimSpace(string(b))
-		} else {
-			c.Secret = randomHex(32)
-			if err := os.WriteFile(keyFile, []byte(c.Secret), 0o600); err != nil {
-				return nil, err
-			}
+		if c.Secret, err = loadSecret(c.DataDir); err != nil {
+			return nil, err
 		}
 	}
 	return c, nil
+}
+
+// loadSecret: the signing secret survives restarts so logins stay valid.
+func loadSecret(dataDir string) (string, error) {
+	keyFile := filepath.Join(dataDir, "secret.key")
+	if b, err := os.ReadFile(keyFile); err == nil {
+		return strings.TrimSpace(string(b)), nil
+	}
+	s := randomHex(32)
+	return s, os.WriteFile(keyFile, []byte(s), 0o600)
 }
 
 func NewServer(c *Config) (*Server, error) {
@@ -218,6 +221,25 @@ func serve(ctx context.Context, addr string, h http.Handler) (*http.Server, net.
 	return s, ln, nil
 }
 
+// Start runs the background parts: Tailscale (if on) and the cleanup timer.
+func (srv *Server) Start(ctx context.Context) {
+	if srv.cfg.Tailscale {
+		startTailnet(ctx, srv, srv.Handler())
+	}
+	go func() { // empty old trash and versions now and every 6 hours
+		for {
+			if t, v := srv.cleanUpOld(); t+v > 0 {
+				log.Printf("cleanup: removed %d old trash items and %d old versions", t, v)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(6 * time.Hour):
+			}
+		}
+	}()
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		fmt.Println(Version)
@@ -225,6 +247,15 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "status" {
 		statusCommand(os.Args[2:])
+		return
+	}
+	// Double-clicked (no settings given): run as the app with its setup page.
+	if (len(os.Args) == 1 && os.Getenv("HOMEDRIVE_FILES") == "") || (len(os.Args) > 1 && os.Args[1] == "app") {
+		runApp(os.Args[min(len(os.Args), 2):])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "open" {
+		openCommand(os.Args[2:])
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "pair-code" {
@@ -248,12 +279,10 @@ func main() {
 	}
 	log.Printf("HomeDrive %s serving %s at http://%s", Version, cfg.FilesRoot, ln.Addr())
 	servers := []*http.Server{main}
-	if cfg.Tailscale {
-		if !cfg.RequirePairing {
-			log.Fatal("Tailscale makes HomeDrive reachable from other machines, so pairing can't be turned off with it")
-		}
-		startTailnet(ctx, srv, srv.Handler())
+	if cfg.Tailscale && !cfg.RequirePairing {
+		log.Fatal("Tailscale makes HomeDrive reachable from other machines, so pairing can't be turned off with it")
 	}
+	srv.Start(ctx)
 	if cfg.PublicListen != "" {
 		pub, pln, err := serve(ctx, cfg.PublicListen, srv.PublicHandler())
 		if err != nil {
@@ -262,19 +291,6 @@ func main() {
 		log.Printf("Share pages at http://%s", pln.Addr())
 		servers = append(servers, pub)
 	}
-
-	go func() { // empty old trash and versions now and every 6 hours
-		for {
-			if t, v := srv.cleanUpOld(); t+v > 0 {
-				log.Printf("cleanup: removed %d old trash items and %d old versions", t, v)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(6 * time.Hour):
-			}
-		}
-	}()
 
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)

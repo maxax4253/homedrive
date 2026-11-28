@@ -67,15 +67,19 @@ jobs:
       - name: Also builds without Tailscale (standard library only)
         run: |
           cd core
-          go vet -modfile=go.notailscale.mod -tags notailscale ./...
-          go test -modfile=go.notailscale.mod -tags notailscale ./...
+          go vet -modfile=go.notailscale.mod -tags notailscale,notray ./...
+          go test -modfile=go.notailscale.mod -tags notailscale,notray ./...
       - name: Build (with the race detector for the checks below)
         run: cd core && go build -race -o /tmp/homedrive-core .
       - name: Builds for every system
         run: |
           cd core
-          for t in darwin/arm64 darwin/amd64 windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+          for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
             GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null . && echo "built $t"
+          done
+          # The Mac menu-bar icon needs Apple's tools; it's built in the mac job.
+          for t in darwin/arm64 darwin/amd64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -tags notray -o /dev/null . && echo "built $t (no menu-bar icon)"
           done
       - name: Built-in Tailscale starts and offers a sign-in link
         run: |
@@ -117,6 +121,17 @@ jobs:
         run: cd mac && swift build
       - name: Test
         run: cd mac && swift test
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod
+      - name: Server app with its menu-bar icon (Apple Silicon and Intel)
+        run: |
+          cd core
+          go vet ./...
+          go test ./...
+          for arch in arm64 amd64; do
+            CGO_ENABLED=1 GOARCH=$arch go build -o /tmp/homedrive-server-$arch . && echo "built darwin/$arch"
+          done
 
   scripts:
     runs-on: ubuntu-latest

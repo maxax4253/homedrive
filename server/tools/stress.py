@@ -111,7 +111,8 @@ def stream_upload(client: selftest.Client, folder: str, name: str, size: int) ->
 
     url = client.url("upload", {"path": folder})
     req = urllib.request.Request(url, data=body(), method="POST")
-    req.add_header("Authorization", f"Bearer {client.token}")
+    for k, v in selftest.auth_headers(client.token).items():
+        req.add_header(k, v)
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     req.add_header("Content-Length", str(len(head) + size + len(tail)))
     with urllib.request.urlopen(req, timeout=3600) as r:
@@ -123,7 +124,8 @@ def stream_upload(client: selftest.Client, folder: str, name: str, size: int) ->
 
 def stream_download(client: selftest.Client, path: str) -> tuple[int, str]:
     req = urllib.request.Request(client.url("download", {"path": path}))
-    req.add_header("Authorization", f"Bearer {client.token}")
+    for k, v in selftest.auth_headers(client.token).items():
+        req.add_header(k, v)
     h, n = hashlib.sha256(), 0
     with urllib.request.urlopen(req, timeout=3600) as r:
         while chunk := r.read(4 * 1024 * 1024):
@@ -155,14 +157,18 @@ def main() -> int:
                "--port", str(args.port), "--log-level", "warning"]
     server = subprocess.Popen(cmd, cwd=HERE, env=env)
     selftest.URL = f"http://127.0.0.1:{args.port}"
+    selftest.USER = "max"
     try:
         for _ in range(50):
             try:
-                selftest.Client().get("health")
+                selftest.PAIRING = bool(selftest.Client().get("health").json().get("pairing"))
                 break
             except Exception:  # noqa: BLE001
                 time.sleep(0.2)
-        admin = selftest.login("max", "stress-password")
+        if args.go:
+            selftest.PAIR_CODE = subprocess.run([args.go, "pair-code", "-data", str(data), "-user", "max"],
+                                                capture_output=True, text=True, check=True).stdout.strip()
+        admin = selftest.CODE_MAKER = selftest.login("max", "stress-password")
 
         print("\nBrowsing a big drive")
         timed("me (storage numbers, first time: walks the whole drive)", lambda: admin.get("me").json(), 5)
@@ -180,7 +186,8 @@ def main() -> int:
 
         def zip_crowded():
             req = urllib.request.Request(admin.url("zip", {"path": "Crowded"}))
-            req.add_header("Authorization", f"Bearer {admin.token}")
+            for k, v in selftest.auth_headers(admin.token).items():
+                req.add_header(k, v)
             with urllib.request.urlopen(req, timeout=600) as resp:
                 body = resp.read()
             names = zipfile.ZipFile(io.BytesIO(body)).namelist()

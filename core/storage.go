@@ -738,3 +738,5 @@ func visibleFiles(folder string, visit func(path string) bool) {
 		return nil
 	})
 }
+
+func mkdirAll(p string) error { return os.MkdirAll(p, 0o755) }

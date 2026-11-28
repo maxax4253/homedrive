@@ -10,8 +10,10 @@ Settings come from environment variables (the `homedrive` command fills these in
   HD_USER      admin username
   HD_PASSWORD  admin password
   HD_PUBLIC    public share-link address (empty if share links are off)
+  HD_PAIR_CODE pairing code for the admin, if the server only lets in paired devices
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -35,6 +37,12 @@ USER = os.environ.get("HD_USER", "")
 PASSWORD = os.environ.get("HD_PASSWORD", "")
 PUBLIC = os.environ.get("HD_PUBLIC", "").rstrip("/")
 DOCKER = os.environ.get("HD_DOCKER", "docker")   # "sudo docker" if needed
+PAIR_CODE = os.environ.get("HD_PAIR_CODE", "").strip()
+
+# Servers that only let in paired devices: each account the test uses gets its own device.
+PAIRING = False
+DEVICES: dict[str, str] = {}     # username -> device key
+CODE_MAKER = None                # the admin's Client, which makes pairing codes for other accounts
 
 STAMP = time.strftime("%Y%m%d-%H%M%S")
 FOLDER = f"_selftest-{STAMP}"           # scratch folder at the top of the admin's drive
@@ -69,11 +77,32 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 opener = urllib.request.build_opener(NoRedirect)
 
 
+def token_user(token: str | None) -> str | None:
+    try:
+        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().split(":")[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def device_for(token: str | None = None, username: str | None = None) -> str | None:
+    """The device key to send: the token's own account's device, else the admin's."""
+    return DEVICES.get(username or token_user(token) or "") or DEVICES.get(USER)
+
+
+def auth_headers(token: str | None) -> dict:
+    h = {"Authorization": f"Bearer {token}"} if token else {}
+    if dev := device_for(token):
+        h["X-HomeDrive-Device"] = dev
+    return h
+
+
 def request(method: str, url: str, *, token: str | None = None, body: bytes | None = None,
-            content_type: str | None = None, timeout: float = 120) -> Reply:
+            content_type: str | None = None, timeout: float = 120, device: str | None = None) -> Reply:
     req = urllib.request.Request(url, data=body, method=method)
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    for k, v in auth_headers(token).items():
+        req.add_header(k, v)
+    if device:
+        req.add_header("X-HomeDrive-Device", device)
     if content_type:
         req.add_header("Content-Type", content_type)
     try:
@@ -96,7 +125,8 @@ class Client:
 
     def post(self, path, data=None, params=None) -> Reply:
         body = json.dumps(data).encode() if data is not None else None
-        return request("POST", self.url(path, params), token=self.token, body=body,
+        device = device_for(username=data.get("username")) if path == "login" and not self.token else None
+        return request("POST", self.url(path, params), token=self.token, body=body, device=device,
                        content_type="application/json" if body is not None else None)
 
     def delete(self, path) -> Reply:
@@ -112,6 +142,19 @@ class Client:
 
 
 def login(username: str, password: str) -> Client:
+    if PAIRING and username not in DEVICES:
+        if username == USER:
+            if not PAIR_CODE:
+                raise AssertionError("this server only lets in paired devices: set HD_PAIR_CODE to a pairing code")
+            code = PAIR_CODE
+        else:
+            code = CODE_MAKER.post("devices/code", {"username": username}).json()["code"]
+        r = Client().post("pair", {"code": code, "username": username, "password": password,
+                                   "device_name": "HomeDrive self-test"})
+        if r.status != 200:
+            raise AssertionError(f"pairing {username} failed: {r.status} {r.text[:200]}")
+        DEVICES[username] = r.json()["device_key"]
+        return Client(r.json()["token"])
     r = Client().post("login", {"username": username, "password": password})
     if r.status != 200:
         raise AssertionError(f"login as {username} failed: {r.status} {r.text[:200]}")
@@ -204,7 +247,19 @@ def run_all() -> None:
         status(r, 200, "health")
         ctx["version"] = r.json()["version"]
         print(f"    {DIM}version {ctx['version']}{RESET}")
+        global PAIRING
+        PAIRING = bool(r.json().get("pairing"))
     _()
+
+    if PAIRING:
+        @check("unpaired devices can't sign in, and this one can pair")
+        def _():
+            status(Client().post("login", {"username": USER, "password": PASSWORD}), 403, "login on an unpaired device")
+            global CODE_MAKER
+            ctx["admin"] = CODE_MAKER = login(USER, PASSWORD)
+            status(request("GET", f"{URL}/api/list", token=ctx["admin"].token, device="made-up.key"), 403,
+                   "a made-up device key")
+        _()
 
     @check("wrong password is refused")
     def _():
@@ -213,7 +268,8 @@ def run_all() -> None:
 
     @check("admin can sign in")
     def _():
-        ctx["admin"] = login(USER, PASSWORD)
+        global CODE_MAKER
+        ctx["admin"] = CODE_MAKER = login(USER, PASSWORD)
     _()
     if len(PASSWORD) < 8:
         warn("admin password is long enough",
@@ -644,6 +700,10 @@ def cleanup() -> None:
     for e in admin.get("trash").json()["entries"]:
         if e["original"] in originals or e["original"].startswith(FOLDER + "/"):
             admin.post("trash/delete", {"name": e["trash_name"]})
+    if PAIRING:   # forget the device this test paired
+        for d in admin.get("devices").json().get("devices", []):
+            if d["this_device"]:
+                admin.delete(f"devices/{d['id']}")
     if problems:
         print(f"\n{YELLOW}Cleanup left behind: {', '.join(problems)}{RESET}")
     else:

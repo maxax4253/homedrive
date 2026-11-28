@@ -334,7 +334,7 @@ function fillDash(s) {
   $("d-ver").textContent = "HomeDrive " + s.version;
   $("d-upd").textContent = u.busy ? u.status
     : u.available ? "Version " + u.available + " is available."
-    : u.status || u.error || (u.checked ? "You're up to date." : "Checks for updates every day.");
+    : u.status || u.error || (u.checked ? "You're up to date." : "Checks for updates automatically.");
   $("d-upd-go").hidden = !u.available || u.busy;
   $("d-upd-check").hidden = !!u.available || u.busy;
   $("d-upd-spin").hidden = !u.busy;

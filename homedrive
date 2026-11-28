@@ -123,6 +123,9 @@ as_owner() {  # run a command as the install's owner (when this runs as root)
 
 install_new_server() {  # download the newest new-server build (fingerprint checked)
   local arch url tmp want got
+  if [ -n "${HD_TEST_SERVER_BINARY:-}" ]; then  # tests: use a local build instead of downloading
+    mkdir -p "$(dirname "$NEW_BIN")" && install -m 755 "$HD_TEST_SERVER_BINARY" "$NEW_BIN" && return 0
+  fi
   case "$(uname -m)" in x86_64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) echo "Unsupported computer type: $(uname -m)"; return 1 ;; esac
   url=$(curl -fsSL "https://api.github.com/repos/maxax4253/homedrive/releases?per_page=30" |
     grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(https:[^"]*\)"$/\1/' |
@@ -222,7 +225,7 @@ switch_to_new() {
   for _ in $(seq 1 300); do
     st=$("$NEW_BIN" status -data "$NEW_DATA" 2>/dev/null || true)
     case "$st" in
-      *"HomeDrive is at"*) break ;;
+      *"HomeDrive is at"*|*"Tailscale problem"*) break ;;
       *"Connect HomeDrive to Tailscale"*)
         if [ -z "$shown" ]; then
           echo
@@ -271,13 +274,13 @@ if [ -f "$SWITCHED" ]; then
       ;;
     pair|pair-code)
       who="${2:-$(env_get HOMEDRIVE_USERNAME)}"
-      echo "Pairing code for $who: $("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$who")"
+      echo "Pairing code for $who: $("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$who" 2>/dev/null)"
       echo "Type it on the new device when it asks. Works once, for 10 minutes."
       ;;
     logs)    $SUDO journalctl -u homedrive -f -n 100 ;;
     restart|stop|start) $SUDO systemctl "$1" homedrive ;;
     selftest)
-      HD_PAIR_CODE="$("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$(env_get HOMEDRIVE_USERNAME)")" \
+      HD_PAIR_CODE="$("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$(env_get HOMEDRIVE_USERNAME)" 2>/dev/null)" \
         HD_URL="http://127.0.0.1:8093" HD_USER="$(env_get HOMEDRIVE_USERNAME)" HD_PASSWORD="$(env_get HOMEDRIVE_PASSWORD)" \
         HD_PUBLIC="http://127.0.0.1:8091" HD_DOCKER=false python3 "$SERVER/selftest.py"
       ;;

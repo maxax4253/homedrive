@@ -9,6 +9,25 @@ ask() { read -r "$@" < /dev/tty; }
 
 if [ -f .env ]; then
   echo ".env already exists. Starting/updating HomeDrive..."
+elif [ "${HOMEDRIVE_UNATTENDED:-0}" = "1" ]; then
+  # No questions: everything comes from environment variables (see install.sh).
+  [ -n "${HD_PASSWORD:-}" ] || { echo "HD_PASSWORD is required for an unattended install."; exit 1; }
+  case "$HD_PASSWORD" in *"'"*) echo "HD_PASSWORD can't contain a ' (single quote)."; exit 1 ;; esac
+  FILES_DIR=${HD_FILES_DIR:-$HOME/drive}
+  mkdir -p "$FILES_DIR"
+  BIND_IP=${HD_BIND_IP:-$(tailscale ip -4 2>/dev/null | head -1 || true)}
+  [ -n "$BIND_IP" ] || { echo "Set HD_BIND_IP or connect Tailscale first."; exit 1; }
+  (umask 077
+   cat > .env <<ENV
+HOMEDRIVE_USERNAME='${HD_USER:-max}'
+HOMEDRIVE_PASSWORD='$HD_PASSWORD'
+FILES_DIR=$FILES_DIR
+BIND_IP=$BIND_IP
+PUID=$(id -u)
+PGID=$(id -g)
+ENV
+  )
+  echo "Saved settings to .env"
 else
   ask -p "HomeDrive username [max]: " HD_USER
   HD_USER=${HD_USER:-max}

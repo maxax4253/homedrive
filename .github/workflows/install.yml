@@ -1,0 +1,74 @@
+# Installs HomeDrive from scratch on fresh machines (like a new user would) and
+# runs `homedrive selftest` on each. Catches "works on my Mac Mini, breaks
+# everywhere else" problems. Also runs weekly, in case an outside change (a new
+# Docker or Ubuntu release) breaks installs.
+name: Install on fresh machines
+
+on:
+  push:
+    paths: ["install.sh", "homedrive", "server/**", ".github/workflows/install.yml"]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 24.04
+            os: ubuntu-24.04
+          - name: Ubuntu 22.04
+            os: ubuntu-22.04
+          - name: Ubuntu 24.04 ARM (like a Raspberry Pi)
+            os: ubuntu-24.04-arm
+          - name: Ubuntu 24.04, no Docker yet
+            os: ubuntu-24.04
+            fresh_docker: true
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove the preinstalled Docker (so the installer has to install it)
+        if: matrix.fresh_docker
+        run: |
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          pkgs=$(dpkg -l | awk '/^ii/ {print $2}' | grep -E '^(docker|containerd|moby|runc)' || true)
+          [ -z "$pkgs" ] || sudo apt-get remove -y --purge $pkgs
+          sudo rm -f /usr/bin/docker /usr/local/bin/docker
+          ! command -v docker
+
+      - name: Install HomeDrive (unattended)
+        env:
+          HOMEDRIVE_UNATTENDED: "1"
+          HOMEDRIVE_SKIP_TAILSCALE: "1"
+          HD_PASSWORD: ci-password-123
+          HD_BIND_IP: 127.0.0.1
+          HOMEDRIVE_REPO: ${{ github.workspace }}
+          HOMEDRIVE_REF: ${{ github.sha }}
+        run: bash install.sh
+
+      - name: Running setup again is safe (keeps settings, restarts)
+        run: "$HOME/homedrive/server/setup.sh"
+
+      - name: Status
+        run: |
+          sleep 5
+          homedrive status
+
+      - name: Self-test
+        run: homedrive selftest
+
+      - name: Restart and test again
+        run: |
+          homedrive restart
+          sleep 8
+          homedrive selftest
+
+      - name: Server log (if something failed)
+        if: failure()
+        run: cd "$HOME/homedrive/server" && (docker compose logs --tail 200 || sudo docker compose logs --tail 200)

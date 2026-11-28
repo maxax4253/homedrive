@@ -78,6 +78,9 @@ type App struct {
 	winMu sync.Mutex
 	win   *exec.Cmd // the open HomeDrive window, if any
 
+	embedded bool   // inside the HomeDrive Mac app
+	shutdown func() // stop for good (the Mac app restarts this after updating)
+
 	noTailscale      bool // tests: never contact Tailscale
 	autostartOnSetup bool // the real app: start with the computer from the beginning
 }
@@ -314,6 +317,37 @@ func (a *App) Handler() http.Handler {
 		}
 		return map[string]any{"folder": root}, nil
 	})))
+	// The HomeDrive Mac app on this same computer signs in without a pairing
+	// code: having the secret link already means being at this computer, as the
+	// person whose files these are.
+	mux.HandleFunc("POST /app/api/this-device", a.only(a.api(func(r *http.Request) (any, error) {
+		s, d := a.settings.Load(), a.drive.Load()
+		if s == nil || d == nil {
+			return nil, fail(409, "Finish setting up first.")
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		u := d.users.Get(s.Username)
+		if u == nil {
+			return nil, fail(409, "The admin account is missing.")
+		}
+		dev, key, err := d.devices.Add(u.Username, body.Name, "127.0.0.1")
+		if err != nil {
+			return nil, err
+		}
+		token := makeToken(u.Username, u.TokenVersion, d.cfg.Secret, d.cfg.TokenDays)
+		return map[string]any{"device_key": key, "device_id": dev.ID, "token": token, "username": u.Username,
+			"address": "http://" + a.listen}, nil
+	})))
+	mux.HandleFunc("POST /app/api/shutdown", a.only(a.api(func(r *http.Request) (any, error) {
+		if !a.embedded || a.shutdown == nil {
+			return nil, fail(409, "Quit HomeDrive from its menu-bar icon.")
+		}
+		go func() { time.Sleep(300 * time.Millisecond); a.shutdown() }()
+		return nil, nil
+	})))
 	mux.HandleFunc("POST /app/api/update-check", a.only(a.api(func(r *http.Request) (any, error) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
@@ -403,6 +437,7 @@ func (a *App) api(h func(*http.Request) (any, error)) http.HandlerFunc {
 
 func (a *App) state() map[string]any {
 	out := map[string]any{"version": Version, "setup_done": a.SetupDone(), "autostart": autostartOn(), "update": a.updates.info(),
+		"embedded":           a.embedded,
 		"tailscale_built_in": tailscaleBuilt, "data_dir": a.dataDir, "local_address": "http://" + a.listen}
 	s := a.settings.Load()
 	if s == nil {
@@ -598,6 +633,7 @@ func runApp(args []string) {
 	data := f.String("data", defaultDataDir(), "where HomeDrive keeps its settings")
 	listen := f.String("listen", env("HOMEDRIVE_LISTEN", appListen), "address of the local page (keep it on 127.0.0.1)")
 	noTray := f.Bool("no-tray", os.Getenv("HOMEDRIVE_NO_TRAY") == "1", "no menu-bar icon (print the page's link instead)")
+	embedded := f.Bool("embedded", false, "run hidden inside the HomeDrive Mac app, which shows the pages, the menu-bar icon and does updates")
 	_ = f.Parse(args)
 
 	logToFile(*data)
@@ -611,12 +647,24 @@ func runApp(args []string) {
 		fatalBox(err)
 	}
 	a.autostartOnSetup = true
+	a.embedded = *embedded
+	if *embedded {
+		*noTray = true
+	}
+	// Start-at-login points at this copy of the program (it may have moved, e.g.
+	// into the HomeDrive app, or been replaced by an update).
+	if autostartOn() {
+		_ = setAutostart(true)
+	}
 	var ln net.Listener
 	for i := 0; ; i++ { // right after an update the old copy may still be letting go
 		if ln, err = net.Listen("tcp", *listen); err == nil || !afterUpdate || i == 40 {
 			break
 		}
 		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil && a.embedded {
+		log.Fatalf("can't start: %v (is another copy of HomeDrive running?)", err) // the Mac app says what to do
 	}
 	if err != nil {
 		// Probably already running: show the running one instead of a second copy.
@@ -647,7 +695,9 @@ func runApp(args []string) {
 	}
 	log.Printf("HomeDrive %s: open %s", Version, a.OpenURL())
 	if !a.SetupDone() {
-		a.showPage() // first run: straight to the setup wizard
+		if !a.embedded {
+			a.showPage() // first run: straight to the setup wizard
+		}
 	}
 
 	quit := func() {
@@ -670,7 +720,13 @@ func runApp(args []string) {
 		}
 		os.Exit(0)
 	}
-	a.watchForUpdates()
+	if !a.embedded { // the HomeDrive app updates itself and this with it
+		a.watchForUpdates()
+	}
+	a.shutdown = func() {
+		quit()
+		os.Exit(0)
+	}
 	if *noTray || !trayAvailable() {
 		fmt.Printf("HomeDrive is running. Open this link on this computer to set it up or see how it's doing:\n  %s\n", a.OpenURL())
 		<-ctx.Done()

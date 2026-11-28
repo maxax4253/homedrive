@@ -9,6 +9,10 @@ struct SettingsScreen: View {
             ScreenTitle(title: "Settings")
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
+                    if model.hostsServer {
+                        ThisMacGroup()
+                    }
+
                     SettingsGroup(title: "Share links") {
                         if model.isAdmin {
                             LinksSwitch(compact: false)
@@ -70,6 +74,8 @@ struct SettingsScreen: View {
                                 }
                             }
                         }
+                        // This Mac's own server is part of this app and updates with it.
+                        if !model.isLocalServer {
                         SettingsRow(icon: "server.rack",
                                     title: "Server \(model.serverVersion ?? "…")",
                                     detail: serverDetail) {
@@ -87,6 +93,7 @@ struct SettingsScreen: View {
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }

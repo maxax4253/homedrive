@@ -377,11 +377,21 @@ async function newCode(prefix) {
   const s = state || {};
   if (prefix === "w") {
     $("w-address").textContent = address(s) || "(appears once Tailscale is connected)";
+    if (s.embedded) {
+      document.querySelector('[data-step="4"] h2').textContent = "You're all set";
+      document.querySelector('[data-step="4"] p').textContent =
+        "This Mac signs in to HomeDrive by itself. To use HomeDrive on another computer or phone, open HomeDrive there and sign in with:";
+      $("w-done").textContent = "Open HomeDrive";
+    }
     $("w-user").textContent = s.username || "";
   }
 }
 $("w-newcode").onclick = () => newCode("w");
-$("w-done").onclick = () => show();
+// Inside the HomeDrive Mac app, it takes over from here (and signs this Mac in).
+function tellApp(msg) {
+  try { window.webkit.messageHandlers.homedrive.postMessage(msg); return true; } catch (_) { return false; }
+}
+$("w-done").onclick = () => { if (!tellApp("setup-done")) show(); };
 
 // ---------------------------------------------------------------- dashboard
 

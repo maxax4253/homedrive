@@ -7,8 +7,8 @@ name: Release Mac app
 
 on:
   push:
-    branches: [main]
-    paths: ["mac/**", ".github/workflows/release.yml"]
+    branches: [main, "build-*"] # build-*: build and check only, never publish
+    paths: ["mac/**", "core/**", ".github/workflows/release.yml"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -28,15 +28,34 @@ jobs:
         run: |
           v=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" mac/Info.plist)
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [[ "$GITHUB_REF" == refs/heads/build-* ]]; then
+            echo "Test build from $GITHUB_REF_NAME: not published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release v$v already exists; this run only checks that the app builds."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build HomeDrive.app (Apple silicon + Intel)
-        run: OUT=dist UNIVERSAL=1 ./mac/build-app.sh
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: core/go.mod
+
+      - name: Build HomeDrive.app (Apple silicon + Intel, with the server inside)
+        run: OUT=dist UNIVERSAL=1 REQUIRE_SERVER=1 ./mac/build-app.sh
+
+      - name: Check the server inside starts
+        run: |
+          S=mac/dist/HomeDrive.app/Contents/MacOS/homedrive-server
+          lipo -info "$S"
+          "$S" version
+          D=$(mktemp -d)
+          HOMEDRIVE_DATA="$D" "$S" app -embedded -listen 127.0.0.1:18093 &
+          for i in $(seq 1 40); do curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18093/api/health | grep -q 503 && break; sleep 0.5; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18093/api/health)" = 503
+          test -s "$D/app-url"
+          kill %1
 
       - name: Zip it
         run: |

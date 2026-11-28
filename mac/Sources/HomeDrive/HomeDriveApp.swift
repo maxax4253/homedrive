@@ -7,7 +7,7 @@ struct HomeDriveApp: App {
     private let model = DriveModel.shared
 
     var body: some Scene {
-        WindowGroup("HomeDrive") {
+        WindowGroup("HomeDrive", id: "main") {
             RootView()
                 .environment(model)
                 .frame(minWidth: 900, minHeight: 560)
@@ -28,6 +28,44 @@ struct HomeDriveApp: App {
                     .disabled(!model.isLoggedIn)
             }
         }
+
+        // On the Mac that keeps the files: one menu-bar icon with its status.
+        MenuBarExtra("HomeDrive", systemImage: "externaldrive.connected.to.line.below", isInserted: menuBarBinding) {
+            HomeDriveMenu().environment(model)
+        }
+    }
+
+    private var menuBarBinding: Binding<Bool> {
+        Binding(get: { model.hostsServer }, set: { _ in })
+    }
+}
+
+struct HomeDriveMenu: View {
+    @Environment(DriveModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Text(model.localStatus.isEmpty ? "HomeDrive is running" : "HomeDrive: " + model.localStatus)
+        Divider()
+        Button("Open HomeDrive") { show() }
+        Button("Pair a device…") {
+            show()
+            Task { await model.makePairingCode() }
+        }
+        Button("Server settings…") {
+            show()
+            Task { await model.openServerSettings() }
+        }
+        Divider()
+        Button("Quit HomeDrive") { NSApp.terminate(nil) }
+        Text("Your files stay reachable after quitting.")
+    }
+
+    private func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
+            openWindow(id: "main")
+        }
     }
 }
 
@@ -43,7 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// On the Mac that keeps the files, closing the window leaves the menu-bar icon.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !LocalServer.isSetUp
+    }
 }
 
 struct RootView: View {
@@ -63,6 +104,16 @@ struct RootView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .sheet(isPresented: serverPageBinding) {
+            if let url = model.serverPageURL {
+                ServerPageSheet(url: url).environment(model)
+            }
+        }
+        .task { await model.startLocalServerIfNeeded() }
+    }
+
+    private var serverPageBinding: Binding<Bool> {
+        Binding(get: { model.serverPageURL != nil }, set: { if !$0 { model.serverPageURL = nil } })
     }
 
     private var errorBinding: Binding<Bool> {

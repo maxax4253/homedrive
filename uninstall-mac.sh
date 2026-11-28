@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes HomeDrive from this Mac: the HomeDrive app, HomeDrive Server, their
+# Removes HomeDrive from this Mac: the app (and the server inside it), its
 # settings and sign-ins, and start-at-login. Your files are NOT deleted: the
 # folder HomeDrive Server shared stays where it is, and the offline folders
 # go to the Trash. In Terminal, run:
@@ -11,6 +11,7 @@ set -euo pipefail
 
 osascript -e 'quit app "HomeDrive"' >/dev/null 2>&1 || true
 pkill -f "HomeDrive Server.app/Contents/MacOS/" 2>/dev/null || true
+pkill -f "HomeDrive.app/Contents/MacOS/homedrive-server" 2>/dev/null || true
 sleep 1
 
 rm -f "$HOME/Library/LaunchAgents/com.homedrive.server.plist"

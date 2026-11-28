@@ -55,6 +55,14 @@ final class DriveModel {
     var needsPairingCode = false
     /// A short note under the pairing box (e.g. this Mac was removed), instead of a popup.
     var pairingNote: String?
+
+    // This Mac as the one that keeps the files (LocalServer.swift)
+    var serverPageURL: URL?
+    var serverPageIsSetup = false
+    var localServerState: LocalServer.State?
+    var localStatus = ""
+    /// On the sign-in screen: show the server form instead of the first-launch choice.
+    var showConnectForm = !(UserDefaults.standard.string(forKey: "serverURL") ?? "").isEmpty
     private(set) var isLoggedIn = false
     private(set) var api: APIClient?
 
@@ -260,6 +268,26 @@ final class DriveModel {
     // MARK: - Login
 
     /// "homedrive.x.ts.net/" -> "https://homedrive.x.ts.net"; a bare 100.x address gets http.
+    /// The last part of every sign-in: remember it and show the drive.
+    func finishSignIn(client: APIClient, server text: String, token: String, username name: String) async {
+        client.token = token
+        TokenStore.save(token, account: text)
+        needsPairingCode = false
+        pairingCode = ""
+        pairingNote = nil
+        serverURL = text
+        UserDefaults.standard.set(text, forKey: "serverURL")
+        api = client
+        password = ""
+        username = name
+        UserDefaults.standard.set(name, forKey: "username")
+        offline.configure(account: accountKey)
+        isLoggedIn = true
+        section = .drive
+        path = ""
+        await refresh()
+    }
+
     nonisolated static func normalizedServer(_ typed: String) -> String {
         var text = typed.trimmingCharacters(in: .whitespaces)
         if !text.hasPrefix("http://") && !text.hasPrefix("https://") {
@@ -297,22 +325,7 @@ final class DriveModel {
                 }
                 result = try await client.login(username: username, password: password)
             }
-            client.token = result.token
-            TokenStore.save(result.token, account: text)
-            needsPairingCode = false
-            pairingCode = ""
-            pairingNote = nil
-            UserDefaults.standard.set(text, forKey: "serverURL")
-            UserDefaults.standard.set(username, forKey: "username")
-            api = client
-            password = ""
-            username = result.username
-            UserDefaults.standard.set(result.username, forKey: "username")
-            offline.configure(account: accountKey)
-            isLoggedIn = true
-            section = .drive
-            path = ""
-            await refresh()
+            await finishSignIn(client: client, server: text, token: result.token, username: result.username)
         } catch let error as APIError where error.needsPairing {
             TokenStore.delete(account: deviceAccount)   // removed on the server: pair again
             needsPairingCode = true

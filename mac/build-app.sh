@@ -29,6 +29,27 @@ cp "$BIN" "$APP/Contents/MacOS/HomeDrive"
 cp Info.plist "$APP/Contents/Info.plist"
 iconutil -c icns AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
+# The HomeDrive server, hidden inside the app: it keeps the files when this Mac
+# is the one that does. Built from ../core with Go (https://go.dev/dl).
+if command -v go >/dev/null 2>&1; then
+  echo "Building the server part..."
+  V=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+  FLAGS=(-trimpath -tags "notray,nowindow" -ldflags "-s -w -X main.Version=$V")
+  if [ "${UNIVERSAL:-0}" = "1" ]; then
+    (cd ../core && GOARCH=arm64 go build "${FLAGS[@]}" -o "$STAGE/hd-arm64" . \
+                && GOARCH=amd64 go build "${FLAGS[@]}" -o "$STAGE/hd-amd64" .)
+    lipo -create -output "$APP/Contents/MacOS/homedrive-server" "$STAGE/hd-arm64" "$STAGE/hd-amd64"
+    rm -f "$STAGE/hd-arm64" "$STAGE/hd-amd64"
+  else
+    (cd ../core && go build "${FLAGS[@]}" -o "$APP/Contents/MacOS/homedrive-server" .)
+  fi
+elif [ "${REQUIRE_SERVER:-0}" = "1" ]; then
+  echo "Go is needed to build the server part."
+  exit 1
+else
+  echo "Go isn't installed, so this build can only connect to a HomeDrive (it can't keep files)."
+fi
+
 # Ad-hoc sign (free) so macOS is happy running it.
 codesign --force --deep --sign - "$APP" >/dev/null
 

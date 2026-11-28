@@ -100,39 +100,8 @@ jobs:
           name: server-windows
           path: dist/*
 
-  mac:
-    needs: version
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: core/go.mod
-      - name: Build HomeDrive Server.app (Apple silicon + Intel)
-        env:
-          V: ${{ needs.version.outputs.version }}
-        run: |
-          cd core
-          for arch in arm64 amd64; do
-            CGO_ENABLED=1 GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.Version=$V" -o /tmp/hd-$arch .
-          done
-          APP="/tmp/out/HomeDrive Server.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          lipo -create -output "$APP/Contents/MacOS/homedrive-server" /tmp/hd-arm64 /tmp/hd-amd64
-          iconutil -c icns packaging/ServerIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
-          sed "s/__VERSION__/$V/g" packaging/Info.plist > "$APP/Contents/Info.plist"
-          plutil -lint "$APP/Contents/Info.plist"
-          codesign --force --deep --sign - "$APP"   # ad-hoc (free) signature
-          mkdir -p ../dist
-          ditto -c -k --keepParent "$APP" ../dist/HomeDrive-Server-mac.zip
-          ls -lh ../dist
-      - uses: actions/upload-artifact@v7
-        with:
-          name: server-mac
-          path: dist/*
-
   publish:
-    needs: [version, windows-linux, windows, mac]
+    needs: [version, windows-linux, windows]
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -155,7 +124,7 @@ jobs:
             --title "HomeDrive Server $V" \
             --notes "Download the one for your computer, open it, and follow the setup page.
 
-          - **Mac:** HomeDrive-Server-mac.zip (Apple silicon and Intel). The first time, right-click the app and choose Open.
+          - **Mac:** use the HomeDrive app (it has the server built in): see the README.
           - **Windows:** HomeDrive-Server-windows-x64.zip (most PCs) or -arm64. If Windows warns about an unknown app, choose More info → Run anyway.
           - **Linux:** HomeDrive-Server-linux-x64.tar.gz or -arm64, then run ./homedrive-server
 

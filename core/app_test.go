@@ -288,3 +288,33 @@ func TestChangeFolder(t *testing.T) {
 		t.Fatal("new folder not saved")
 	}
 }
+
+// The HomeDrive Mac app on the server computer signs itself in, no code.
+func TestThisDeviceSignsInWithoutACode(t *testing.T) {
+	a, c := testApp(t)
+	c.open(a)
+	if st, _ := c.req("POST", "/app/api/this-device", map[string]string{"name": "Max's Mac"}, nil); st != 409 {
+		t.Fatal("worked before setup")
+	}
+	c.req("POST", "/app/api/setup", map[string]string{"files_root": t.TempDir() + "/f", "username": "max", "password": "longpassword"}, nil)
+	st, out := c.req("POST", "/app/api/this-device", map[string]string{"name": "Max's Mac"}, nil)
+	if st != 200 || out["username"] != "max" || out["address"] != c.base {
+		t.Fatalf("this-device: %d %v", st, out)
+	}
+	dev, tok := out["device_key"].(string), out["token"].(string)
+	if st, _ := c.req("GET", "/api/list", nil, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+tok)
+		r.Header.Set(deviceHeader, dev)
+	}); st != 200 {
+		t.Fatalf("list with the new device: %d", st)
+	}
+	// Without the secret link it's refused.
+	other := &appClient{t: t, base: c.base, http: &http.Client{}}
+	if st, _ := other.req("POST", "/app/api/this-device", map[string]string{}, nil); st != 403 {
+		t.Fatalf("no secret: %d", st)
+	}
+	// Shutdown is only for the copy inside the Mac app.
+	if st, _ := c.req("POST", "/app/api/shutdown", map[string]string{}, nil); st != 409 {
+		t.Fatalf("shutdown outside the app: %d", st)
+	}
+}

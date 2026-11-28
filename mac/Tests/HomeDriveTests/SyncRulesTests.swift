@@ -165,3 +165,28 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertEqual(DriveModel.normalizedServer("http://100.92.202.70:8090"), "http://100.92.202.70:8090")
     }
 }
+
+final class LocalServerTests: XCTestCase {
+    func testStateFromTheServerPage() throws {
+        let json = #"{"setup_done":true,"running":true,"files_root":"/Users/max/HomeDrive Files","embedded":true,"#
+            + #""tailscale_status":{"state":"running","address":"https://homedrive.x.ts.net","funnel":true,"updated":1},"#
+            + #""needs_tailscale_login":false,"version":"0.9.8"}"#
+        let s = try JSONDecoder().decode(LocalServer.State.self, from: Data(json.utf8))
+        XCTAssertTrue(s.setupDone)
+        XCTAssertEqual(s.tailscaleStatus?.address, "https://homedrive.x.ts.net")
+        XCTAssertEqual(LocalServer.describe(s).text, "Reachable from anywhere")
+        XCTAssertTrue(LocalServer.describe(s).ok)
+    }
+
+    func testStatusLines() throws {
+        func state(_ ts: String, funnel: Bool = false) throws -> LocalServer.State {
+            try JSONDecoder().decode(LocalServer.State.self, from: Data(
+                #"{"setup_done":true,"running":true,"tailscale_status":{"state":"\#(ts)","funnel":\#(funnel)}}"#.utf8))
+        }
+        XCTAssertEqual(LocalServer.describe(nil).text, "Not running")
+        XCTAssertEqual(LocalServer.describe(try state("needs_login")).text, "Needs Tailscale sign-in")
+        XCTAssertFalse(LocalServer.describe(try state("needs_login")).ok)
+        XCTAssertEqual(LocalServer.describe(try state("running")).text, "Reachable from your devices on Tailscale")
+        XCTAssertEqual(LocalServer.describe(try state("certificate")).text, "Almost ready")
+    }
+}

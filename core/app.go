@@ -633,6 +633,7 @@ func runApp(args []string) {
 	data := f.String("data", defaultDataDir(), "where HomeDrive keeps its settings")
 	listen := f.String("listen", env("HOMEDRIVE_LISTEN", appListen), "address of the local page (keep it on 127.0.0.1)")
 	noTray := f.Bool("no-tray", os.Getenv("HOMEDRIVE_NO_TRAY") == "1", "no menu-bar icon (print the page's link instead)")
+	publicListen := f.String("public-listen", "", "also serve share-link pages (only) here, e.g. 127.0.0.1:8091 for Tailscale Funnel")
 	embedded := f.Bool("embedded", false, "run hidden inside the HomeDrive Mac app, which shows the pages, the menu-bar icon and does updates")
 	_ = f.Parse(args)
 
@@ -692,6 +693,9 @@ func runApp(args []string) {
 		if err := a.startDrive(); err != nil {
 			log.Printf("couldn't start: %v", err)
 		}
+	}
+	if *publicListen != "" {
+		a.servePublic(ctx, *publicListen)
 	}
 	log.Printf("HomeDrive %s: open %s", Version, a.OpenURL())
 	if !a.SetupDone() {
@@ -785,6 +789,37 @@ func windowCommand() {
 		log.Fatal("the HomeDrive window is opened from the HomeDrive menu-bar icon")
 	}
 	runWindow(u)
+}
+
+// servePublic serves the share-link pages (nothing else) on another address,
+// e.g. where an existing Tailscale Funnel points, so old links keep working.
+func (a *App) servePublic(ctx context.Context, addr string) {
+	// Built once per running drive, so its rate limits last between requests.
+	var mu sync.Mutex
+	var forDrive *Server
+	var public http.Handler
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d := a.drive.Load()
+		if d == nil {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		if forDrive != d {
+			forDrive, public = d, d.PublicHandler()
+		}
+		ph := public
+		mu.Unlock()
+		ph.ServeHTTP(w, r)
+	})
+	hs := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 20 * time.Second, IdleTimeout: 2 * time.Minute,
+		BaseContext: func(net.Listener) context.Context { return ctx }}
+	go func() { <-ctx.Done(); _ = hs.Close() }()
+	go func() {
+		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("share-link pages on %s: %v", addr, err)
+		}
+	}()
 }
 
 // openCommand: `homedrive-server open` opens the running app's page.

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -262,6 +263,10 @@ func main() {
 		openCommand(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "password" {
+		passwordCommand(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "pair-code" {
 		pairCodeCommand(os.Args[2:])
 		return
@@ -327,4 +332,35 @@ func pairCodeCommand(args []string) {
 	}
 	fmt.Printf("%s\n", code)
 	fmt.Fprintf(os.Stderr, "Pairing code for %s, valid until %s\n", name, expires.Format("3:04 PM"))
+}
+
+// passwordCommand sets someone's password; the new one is read from standard
+// input (never a flag, which other people could see). Stop the server first.
+//
+//	echo -n 'new password' | homedrive-server password -data ~/.local/share/homedrive -user max
+func passwordCommand(args []string) {
+	f := flag.NewFlagSet("password", flag.ExitOnError)
+	data := f.String("data", env("HOMEDRIVE_DATA", "./data"), "the server's data folder")
+	user := f.String("user", "", "whose password")
+	_ = f.Parse(args)
+	b, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+	if err != nil {
+		log.Fatal(err)
+	}
+	pw := strings.TrimRight(string(b), "\r\n")
+	if pw == "" {
+		log.Fatal("the password can't be empty")
+	}
+	users, err := OpenUsers(*data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	name := strings.ToLower(strings.TrimSpace(*user))
+	if users.Get(name) == nil {
+		log.Fatalf("there's no account called %q", name)
+	}
+	if err := users.SetPassword(name, pw); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "Password changed for %s. Their devices sign in again with it.\n", name)
 }

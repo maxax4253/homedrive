@@ -102,7 +102,223 @@ links_off() {
   compose up -d >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------- the new server
+# `homedrive switch` replaces the Docker server with the new one (one program,
+# Tailscale built in, device pairing). Same files folder; accounts, share links,
+# stars and file history are copied over; the old data is left as it was, so
+# `homedrive switch-back` returns to the Docker server at once.
+USER_HOME="$(dirname "$DIR")"
+OWNER_NAME="$(stat -c %U "$SERVER")"
+NEW_DATA="$USER_HOME/.local/share/homedrive"
+NEW_BIN="$USER_HOME/.local/bin/homedrive-server"
+SWITCHED="$SERVER/data/.switched-to-new"
+
+as_owner() {  # run a command as the install's owner (when this runs as root)
+  if [ "$(id -u)" -eq 0 ]; then
+    setpriv --reuid="${OWNER%%:*}" --regid="${OWNER##*:}" --clear-groups env HOME="$USER_HOME" "$@"
+  else
+    "$@"
+  fi
+}
+
+install_new_server() {  # download the newest new-server build (fingerprint checked)
+  local arch url tmp want got
+  case "$(uname -m)" in x86_64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) echo "Unsupported computer type: $(uname -m)"; return 1 ;; esac
+  url=$(curl -fsSL "https://api.github.com/repos/maxax4253/homedrive/releases?per_page=30" |
+    grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*"\(https:[^"]*\)"$/\1/' |
+    grep "/download/server-v[^/]*/HomeDrive-Server-linux-$arch\.tar\.gz$" | head -1) || true
+  [ -n "$url" ] || { echo "Couldn't find the new HomeDrive server to download."; return 1; }
+  tmp=$(mktemp -d)
+  if ! curl -fsSL -o "$tmp/s.tgz" "$url" || ! curl -fsSL -o "$tmp/SUMS" "${url%/*}/SHA256SUMS"; then
+    rm -rf "$tmp"; echo "Download failed."; return 1
+  fi
+  want=$(grep " $(basename "$url")\$" "$tmp/SUMS" | cut -d' ' -f1)
+  got=$(sha256sum "$tmp/s.tgz" | cut -d' ' -f1)
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    rm -rf "$tmp"; echo "The download doesn't match its fingerprint, so it wasn't installed."; return 1
+  fi
+  tar -C "$tmp" -xzf "$tmp/s.tgz" homedrive-server
+  as_owner mkdir -p "$(dirname "$NEW_BIN")"
+  install -m 755 "$tmp/homedrive-server" "$NEW_BIN.new"
+  [ "$(id -u)" -ne 0 ] || chown "$OWNER" "$NEW_BIN.new"
+  mv "$NEW_BIN.new" "$NEW_BIN"
+  rm -rf "$tmp"
+  echo "Installed HomeDrive $("$NEW_BIN" version)"
+}
+
+write_service() {
+  $SUDO tee /etc/systemd/system/homedrive.service >/dev/null <<UNIT
+[Unit]
+Description=HomeDrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$OWNER_NAME
+Environment=HOME=$USER_HOME
+# The app's own page and API on 127.0.0.1:8093; Tailscale (built in) for your
+# devices; share-link pages also on 127.0.0.1:8091, where Tailscale Funnel points.
+ExecStart=$NEW_BIN app -no-tray -data $NEW_DATA -public-listen 127.0.0.1:8091
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  $SUDO systemctl daemon-reload
+}
+
+new_status() {
+  if systemctl is-active --quiet homedrive; then echo "HomeDrive (new server) is running."; else echo "HomeDrive (new server) is NOT running: homedrive logs"; fi
+  "$NEW_BIN" status -data "$NEW_DATA"
+  df -h "$(env_get FILES_DIR | sed "s|^~|$USER_HOME|")" 2>/dev/null | tail -1 | awk '{print "Storage: " $3 " used, " $4 " free"}'
+}
+
+switch_to_new() {
+  [ ! -f "$SWITCHED" ] || { echo "Already on the new server. (homedrive status, homedrive switch-back)"; exit 0; }
+  command -v python3 >/dev/null || { echo "python3 is needed (sudo apt install python3)."; exit 1; }
+  local files admin keep=""
+  files=$(env_get FILES_DIR | sed "s|^~|$USER_HOME|")
+  admin=$(env_get HOMEDRIVE_USERNAME)
+  [ -d "$files" ] || { echo "Can't find your files folder ($files)."; exit 1; }
+  echo "Switching HomeDrive to the new server."
+  echo "  Files stay in $files (not copied or changed)."
+  echo "  Accounts, share links, stars and file history are copied; the old server's data is kept."
+  echo
+  install_new_server || exit 1
+
+  echo "Stopping the old (Docker) server..."
+  $DOCKER compose --env-file .env --profile links down
+
+  # A previous switch's data (from before a switch-back): keep its Tailscale
+  # sign-in and device pairings, take everything else fresh from the old server.
+  if [ -d "$NEW_DATA" ]; then
+    keep="$NEW_DATA.previous-$(date +%Y%m%d-%H%M%S)"
+    as_owner mv "$NEW_DATA" "$keep"
+    echo "(Earlier new-server data moved to $keep)"
+  fi
+  if ! as_owner python3 "$SERVER/tools/move_to_new_server.py" "$SERVER/data" "$NEW_DATA" "$files" "$admin"; then
+    echo "Copying failed. Starting the old server again; nothing was changed."
+    compose up -d
+    exit 1
+  fi
+  if [ -n "$keep" ]; then
+    for d in tailscale devices.json; do
+      if [ -e "$keep/$d" ]; then as_owner cp -a "$keep/$d" "$NEW_DATA/$d"; fi
+    done
+  fi
+
+  write_service
+  $SUDO systemctl enable --now homedrive
+  touch "$SWITCHED"
+  [ "$(id -u)" -ne 0 ] || chown "$OWNER" "$SWITCHED"
+
+  echo
+  echo "Waiting for the new server..."
+  local shown="" st=""
+  for _ in $(seq 1 300); do
+    st=$("$NEW_BIN" status -data "$NEW_DATA" 2>/dev/null || true)
+    case "$st" in
+      *"HomeDrive is at"*) break ;;
+      *"Connect HomeDrive to Tailscale"*)
+        if [ -z "$shown" ]; then
+          echo
+          echo "One step left: sign HomeDrive in to Tailscale. Open this link on any device"
+          echo "(e.g. your MacBook) and sign in with your usual Tailscale account:"
+          echo "$st" | grep -o 'https://login.tailscale.com/[^ ]*'
+          echo
+          echo "(Waiting up to 10 minutes...)"
+          shown=1
+        fi ;;
+    esac
+    sleep 2
+  done
+  echo
+  echo "$st"
+  echo
+  echo "Done: HomeDrive now runs as the new server. To use it on your Mac:"
+  echo "  1. Open HomeDrive, Settings > Sign out, then sign in again with:"
+  echo "  2. Server: the https address above. Name: $admin. Password: the same as before."
+  echo "  3. Pairing code: $("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$admin" 2>/dev/null)  (works once, for 10 minutes; homedrive pair makes a new one)"
+  echo
+  echo "Old share links keep working. Check everything with: homedrive selftest"
+  echo "To go back to the old server: homedrive switch-back"
+}
+
+switch_back() {
+  [ -f "$SWITCHED" ] || { echo "Already on the old (Docker) server."; exit 0; }
+  $SUDO systemctl disable --now homedrive
+  rm -f "$SWITCHED"
+  compose up -d
+  echo "Back on the old server at $(address)."
+  echo "Your files are the same folder either way. Accounts, links or settings changed on the"
+  echo "new server stay in $NEW_DATA (not copied back)."
+}
+
+# After the switch, the everyday commands work with the new server.
+if [ -f "$SWITCHED" ]; then
+  case "${1:-help}" in
+    status)  new_status ;;
+    url)     "$NEW_BIN" status -data "$NEW_DATA" | grep -o 'https://[^ ]*' || echo "Not connected to Tailscale yet: homedrive status" ;;
+    update)
+      echo "Updating HomeDrive..."
+      as_owner git -C "$DIR" pull --ff-only || true
+      sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive 2>/dev/null || true
+      install_new_server && $SUDO systemctl restart homedrive && echo "Updated and restarted."
+      ;;
+    pair|pair-code)
+      who="${2:-$(env_get HOMEDRIVE_USERNAME)}"
+      echo "Pairing code for $who: $("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$who")"
+      echo "Type it on the new device when it asks. Works once, for 10 minutes."
+      ;;
+    logs)    $SUDO journalctl -u homedrive -f -n 100 ;;
+    restart|stop|start) $SUDO systemctl "$1" homedrive ;;
+    selftest)
+      HD_PAIR_CODE="$("$NEW_BIN" pair-code -data "$NEW_DATA" -user "$(env_get HOMEDRIVE_USERNAME)")" \
+        HD_URL="http://127.0.0.1:8093" HD_USER="$(env_get HOMEDRIVE_USERNAME)" HD_PASSWORD="$(env_get HOMEDRIVE_PASSWORD)" \
+        HD_PUBLIC="http://127.0.0.1:8091" HD_DOCKER=false python3 "$SERVER/selftest.py"
+      ;;
+    password)
+      read -rsp "New HomeDrive password: " pw < /dev/tty; echo
+      [ -n "$pw" ] || { echo "Password can't be empty."; exit 1; }
+      if [ "${#pw}" -lt 8 ]; then
+        echo "That's short and easy to guess. 8+ characters is strongly recommended."
+        read -rp "Use it anyway? [y/N] " ok < /dev/tty
+        case "$ok" in y|Y|yes) ;; *) echo "Not changed."; exit 1 ;; esac
+      fi
+      case "$pw" in *"'"*) echo "Please don't use a ' (single quote) in the password."; exit 1 ;; esac
+      $SUDO systemctl stop homedrive
+      printf '%s' "$pw" | as_owner "$NEW_BIN" password -data "$NEW_DATA" -user "$(env_get HOMEDRIVE_USERNAME)"
+      $SUDO systemctl start homedrive
+      env_set HOMEDRIVE_PASSWORD "$pw"   # keeps selftest (and a switch-back) in step
+      ;;
+    switch)      switch_to_new ;;
+    switch-back) switch_back ;;
+    *)
+      cat <<HELP
+homedrive: manage your HomeDrive (new server)
+
+  homedrive status        is it running, its address, Tailscale, space left
+  homedrive url           the address to sign in with
+  homedrive pair [name]   a one-time code to sign in on a new device
+  homedrive update        download the newest version and restart
+  homedrive logs          follow the server log (Ctrl+C to stop)
+  homedrive restart | stop | start
+  homedrive selftest      check that everything works
+  homedrive password      change the admin password
+  homedrive switch-back   go back to the old (Docker) server
+HELP
+      ;;
+  esac
+  exit 0
+fi
+
 case "${1:-help}" in
+  switch)      switch_to_new ;;
+  switch-back) switch_back ;;
   status)
     compose ps
     echo
@@ -295,6 +511,9 @@ homedrive: manage your HomeDrive server
   homedrive links on   turn on public share links (Tailscale Funnel)
   homedrive links off  turn them off
   homedrive install-agent   let the Mac app turn share links on/off (done by install/update)
+
+  homedrive switch     move to the new server (no Docker, Tailscale built in, device pairing;
+                       keeps your files, accounts and share links; homedrive switch-back undoes it)
 EOF
     ;;
 esac

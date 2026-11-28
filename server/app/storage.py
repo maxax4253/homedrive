@@ -227,6 +227,36 @@ def delete_forever(space: Space, name: str) -> None:
     _save_index(space, index)
 
 
+def purge_old_trash(trash_dir: Path, older_than_days: float) -> int:
+    """Delete things that have sat in a Trash folder longer than `older_than_days`."""
+    if older_than_days <= 0 or not trash_dir.is_dir():
+        return 0
+    cutoff = time.time() - older_than_days * 86400
+    index_file = trash_dir / INDEX_NAME
+    try:
+        index = json.loads(index_file.read_text())
+    except (FileNotFoundError, ValueError):
+        index = {}
+    removed = 0
+    for child in list(trash_dir.iterdir()):
+        if child.name.startswith(".index"):
+            continue
+        try:
+            # Moving something into the trash updates its ctime, so that's a safe fallback.
+            deleted = index.get(child.name, {}).get("deleted") or child.lstat().st_ctime
+            if deleted < cutoff:
+                remove_path(child)
+                index.pop(child.name, None)
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        tmp = index_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(index))
+        tmp.replace(index_file)
+    return removed
+
+
 def empty_trash(space: Space) -> int:
     count = 0
     for child in space.trash_dir.iterdir():

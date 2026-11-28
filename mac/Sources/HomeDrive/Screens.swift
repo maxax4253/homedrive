@@ -160,7 +160,7 @@ struct TrashScreen: View {
             .padding(.top, 22)
             .padding(.bottom, 12)
 
-            Text("Items stay in the trash until you empty it or delete them forever.")
+            Text(trashNote)
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textSecondary)
                 .padding(.horizontal, 16)
@@ -183,9 +183,15 @@ struct TrashScreen: View {
             }
         }
     }
+
+    private var trashNote: String {
+        if let days = model.storage?.cleanupDays, days > 0 {
+            return "Items in the trash are deleted forever after \(days) days."
+        }
+        return "Items stay in the trash until you empty it or delete them forever."
+    }
 }
 
-/// Title + view toggle + scrolling content, for Recent and Search.
 struct ListScreen<Content: View>: View {
     let title: String
     @Binding var toggle: ViewMode

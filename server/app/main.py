@@ -22,7 +22,7 @@ from .extras import Limiter, Stars, stream_zip
 from .links_db import LinksDB
 from .versions import VersionStore
 
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 try:
     from PIL import Image, ImageOps
@@ -136,8 +136,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     login_limits = Limiter(forget_after=LOGIN_WINDOW)
     versions = VersionStore(settings.data_dir, settings.versions_to_keep)
     backups = Backups(root, settings.backup_dir, settings.data_dir, settings.backup_hour)
+    def clean_up_old() -> dict:
+        """Empty trash older than cleanup_days in every account, and old file versions."""
+        days = settings.cleanup_days
+        trash_dirs = [root / storage.TRASH_NAME]
+        users_dir = root / USERS_DIR
+        if users_dir.is_dir():
+            trash_dirs += [d / storage.TRASH_NAME for d in users_dir.iterdir() if d.is_dir()]
+        trash = sum(storage.purge_old_trash(d, days) for d in trash_dirs)
+        return {"trash": trash, "versions": versions.purge_older_than(days)}
+
     if settings.run_scheduler:
         backups.start_scheduler()
+
+        def cleanup_loop():
+            while True:
+                try:
+                    clean_up_old()
+                except Exception:  # noqa: BLE001  never let cleanup take the server down
+                    pass
+                time.sleep(6 * 3600)
+        threading.Thread(target=cleanup_loop, daemon=True).start()
 
     app = FastAPI(title="HomeDrive", version=__version__)
     usage_cache: dict[str, tuple[float, int]] = {}
@@ -224,6 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "quota": s.user.quota_bytes,
             "links_enabled": bool(settings.public_url),
             "backups_enabled": backups.enabled,
+            "cleanup_days": settings.cleanup_days,
         }
         # drive_used: how much your HomeDrive files take up (trash included).
         drive_used = usage(s.user.username, s.space.home)
@@ -683,6 +703,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.db = db
     app.state.links = links
+    app.state.clean_up_old = clean_up_old
     app.state.backups = backups
     app.state.versions = versions
     return app

@@ -126,7 +126,9 @@ case "${1:-help}" in
       git -C "$DIR" pull --ff-only
     fi
     sudo install -m 755 "$DIR/homedrive" /usr/local/bin/homedrive 2>/dev/null || true
-    compose up -d --build
+    # --pull fetches the newest Python base image, so its security fixes come along too.
+    compose build --pull
+    compose up -d
     sudo HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive install-agent >/dev/null 2>&1 || true
     echo "Updated. Running at $(address)"
     ;;

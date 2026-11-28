@@ -41,6 +41,27 @@ class VersionStore:
         except (FileNotFoundError, ValueError):
             return {}
 
+    def purge_older_than(self, days: float) -> int:
+        """Drop saved copies older than `days` (and folders left empty)."""
+        if days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        removed = 0
+        for d in self.root.iterdir():
+            if not d.is_dir():
+                continue
+            meta = self._meta(d)
+            old = [vid for vid, m in meta.items() if m.get("saved", 0) < cutoff]
+            for vid in old:
+                (d / vid).unlink(missing_ok=True)
+                meta.pop(vid)
+                removed += 1
+            if not meta:
+                shutil.rmtree(d, ignore_errors=True)
+            elif old:
+                (d / "meta.json").write_text(json.dumps(meta))
+        return removed
+
     def list(self, physical: Path) -> list[dict]:
         d = self._dir(physical)
         meta = self._meta(d)

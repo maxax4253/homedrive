@@ -90,12 +90,15 @@ struct MeResponse: Codable {
     let driveUsed: Int64?
     /// "disk" = numbers are the server's whole disk; "quota" = your storage limit.
     let scope: String?
+    /// Trash empties itself after this many days (0 = never; nil = older server).
+    let cleanupDays: Int?
 
     var isWholeDisk: Bool { scope != "quota" && quota == nil }
 
     enum CodingKeys: String, CodingKey {
         case username, total, used, free, quota, scope
         case driveUsed = "drive_used"
+        case cleanupDays = "cleanup_days"
         case isAdmin = "is_admin"
         case linksEnabled = "links_enabled"
         case backupsEnabled = "backups_enabled"

@@ -123,3 +123,36 @@ def test_successful_login_resets_the_count(world):
     for _ in range(9):
         api.post("/api/login", json={"username": "max", "password": "nope"})
     assert api.post("/api/login", json={"username": "max", "password": "pw"}).status_code == 200
+
+
+def test_old_trash_and_versions_are_cleaned_up(world):
+    import json
+    import os
+    admin, files = world["admin"], world["files"]
+    app = world["api"].app
+    for name in ("old.txt", "new.txt"):
+        admin.post("/api/upload", files=[("files", (name, b"v1"))])
+        admin.post("/api/delete", json={"path": name})
+    # Pretend old.txt was deleted 31 days ago.
+    index_file = files / ".trash" / ".index.json"
+    index = json.loads(index_file.read_text())
+    index["old.txt"]["deleted"] -= 31 * 86400
+    index_file.write_text(json.dumps(index))
+
+    # An edit makes a version; pretend it was saved 31 days ago.
+    admin.post("/api/upload", files=[("files", ("doc.txt", b"one"))])
+    admin.post("/api/upload", params={"replace": "true"}, files=[("files", ("doc.txt", b"two"))])
+    vdir = next(d for d in (world["settings"].data_dir / "versions").iterdir() if d.is_dir())
+    meta = json.loads((vdir / "meta.json").read_text())
+    for m in meta.values():
+        m["saved"] -= 31 * 86400
+    (vdir / "meta.json").write_text(json.dumps(meta))
+
+    result = app.state.clean_up_old()
+    assert result == {"trash": 1, "versions": 1}
+    names = {e["name"] for e in admin.get("/api/trash").json()["entries"]}
+    assert names == {"new.txt"}
+    assert admin.get("/api/versions", params={"path": "doc.txt"}).json()["versions"] == [] or \
+        all(v["source"] != "edit" for v in admin.get("/api/versions", params={"path": "doc.txt"}).json()["versions"])
+    assert admin.get("/api/me").json()["cleanup_days"] == 30
+    assert os.path.exists(files / "doc.txt")

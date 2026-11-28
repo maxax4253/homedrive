@@ -1,3 +1,4 @@
+import pytest
 """Regression tests for fixes from the full code review."""
 
 import io
@@ -46,6 +47,8 @@ def test_link_wide_lockout_across_many_addresses(world):
 
 
 def test_failed_upload_leaves_no_temp_file(world, monkeypatch):
+    if world.get("go"):
+        pytest.skip("checks the Python server's internals")
     admin, files = world["admin"], world["files"]
     import app.main as main
 
@@ -92,6 +95,8 @@ def test_me_reports_homedrive_usage_separately(world):
 
 
 def test_server_update_request(world):
+    if world.get("go"):
+        pytest.skip("checks the Python server's internals")
     import json
     admin, login, settings = world["admin"], world["login"], world["settings"]
     agent = settings.data_dir / "agent"

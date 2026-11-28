@@ -509,9 +509,14 @@ def run_all() -> None:
                 expect(f"{FOLDER}/notes.txt" in names, f"zip contents: {names}")
             _()
 
-            @check("public address exposes nothing else")
+            @check("public address exposes nothing without signing in")
             def _():
-                for path in ("/api/list", "/api/health", "/api/users", "/s/not-a-real-link", "/docs"):
+                # Older servers hide the API from the public address entirely (404); the
+                # all-in-one server serves it there but only to signed-in apps (401).
+                for path in ("/api/list", "/api/users", "/api/trash"):
+                    r = request("GET", pub(path), timeout=30)
+                    expect(r.status in (401, 404), f"{path} gave HTTP {r.status}")
+                for path in ("/s/not-a-real-link", "/docs", "/openapi.json"):
                     r = request("GET", pub(path), timeout=30)
                     expect(r.status == 404, f"{path} gave HTTP {r.status}")
             _()

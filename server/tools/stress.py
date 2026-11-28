@@ -137,6 +137,7 @@ def main() -> int:
     ap.add_argument("--files", type=int, default=100_000)
     ap.add_argument("--big-gb", type=float, default=2.0)
     ap.add_argument("--port", type=int, default=18190)
+    ap.add_argument("--go", metavar="BINARY", help="test the all-in-one Go server binary instead of the Python one")
     args = ap.parse_args()
 
     tmp = Path(tempfile.mkdtemp(prefix="homedrive-stress-"))
@@ -147,8 +148,12 @@ def main() -> int:
 
     env = dict(os.environ, HOMEDRIVE_FILES=str(files), HOMEDRIVE_DATA=str(data),
                HOMEDRIVE_USERNAME="max", HOMEDRIVE_PASSWORD="stress-password", HOMEDRIVE_MIN_FREE_GB="0.5")
-    server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:create_app", "--factory",
-                               "--port", str(args.port), "--log-level", "warning"], cwd=HERE, env=env)
+    if args.go:
+        cmd = [args.go, "-listen", f"127.0.0.1:{args.port}"]
+    else:
+        cmd = [sys.executable, "-m", "uvicorn", "app.main:create_app", "--factory",
+               "--port", str(args.port), "--log-level", "warning"]
+    server = subprocess.Popen(cmd, cwd=HERE, env=env)
     selftest.URL = f"http://127.0.0.1:{args.port}"
     try:
         for _ in range(50):

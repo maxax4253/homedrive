@@ -16,11 +16,56 @@ from app.main import create_app
 from app.public import create_public_app
 
 
+GO_BINARY = os.environ.get("HD_GO_BINARY")   # run the same tests against the Go server
+
+
+def go_world(tmp_path, files, data, backup):
+    """The same `world`, but backed by a running all-in-one Go server binary."""
+    import socket
+    import subprocess
+
+    import httpx
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    base = f"http://127.0.0.1:{port}"
+    env = dict(os.environ, HOMEDRIVE_FILES=str(files), HOMEDRIVE_DATA=str(data), HOMEDRIVE_USERNAME="max",
+               HOMEDRIVE_PASSWORD="pw", HOMEDRIVE_SECRET="s3cret", HOMEDRIVE_PUBLIC_URL="https://box.example.ts.net",
+               HOMEDRIVE_MIN_FREE_GB="0")
+    proc = subprocess.Popen([GO_BINARY, "-listen", f"127.0.0.1:{port}"], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        try:
+            httpx.get(base + "/api/health")
+            break
+        except httpx.HTTPError:
+            time.sleep(0.05)
+    api = httpx.Client(base_url=base, timeout=60)
+    public = httpx.Client(base_url=base, timeout=60)
+
+    def login(user, pw):
+        c = httpx.Client(base_url=base, timeout=60)
+        r = c.post("/api/login", json={"username": user, "password": pw})
+        assert r.status_code == 200, r.text
+        c.headers["Authorization"] = "Bearer " + r.json()["token"]
+        return c
+
+    return proc, {"settings": None, "files": files, "backup": backup, "admin": login("max", "pw"),
+                  "public": public, "login": login, "api": api, "go": True}
+
+
 @pytest.fixture
 def world(tmp_path):
     files, data, backup = tmp_path / "files", tmp_path / "data", tmp_path / "backup"
     for d in (files, data, backup):
         d.mkdir()
+    if GO_BINARY:
+        proc, w = go_world(tmp_path, files, data, backup)
+        yield w
+        proc.terminate()
+        proc.wait()
+        return
     settings = Settings(files_root=files, data_dir=data, username="max", password="pw", secret="s3cret",
                         run_scheduler=False, backup_dir=backup, public_url="https://box.example.ts.net")
     api = TestClient(create_app(settings))
@@ -34,8 +79,8 @@ def world(tmp_path):
         return c
 
     admin = login("max", "pw")
-    return {"settings": settings, "files": files, "backup": backup, "admin": admin,
-            "public": public, "login": login, "api": api}
+    yield {"settings": settings, "files": files, "backup": backup, "admin": admin,
+           "public": public, "login": login, "api": api}
 
 
 # ---------------------------------------------------------------- accounts
@@ -140,6 +185,8 @@ def test_replace_keeps_versions_and_detects_conflicts(world):
 # ---------------------------------------------------------------- backups
 
 def test_backups_snapshot_and_restore(world):
+    if world.get("go"):
+        pytest.skip("checks the Python server's internals")
     admin, files, backup = world["admin"], world["files"], world["backup"]
     backups = world["api"].app.state.backups
     (files / "notes.txt").write_text("v1")
@@ -183,6 +230,8 @@ def test_backup_retention(tmp_path):
 
 
 def test_backups_admin_only_and_off_without_folder(world, tmp_path):
+    if world.get("go"):
+        pytest.skip("checks the Python server's internals")
     admin, login = world["admin"], world["login"]
     admin.post("/api/users", json={"username": "sam", "password": "sam-pass1"})
     assert login("sam", "sam-pass1").get("/api/backups").status_code == 403
@@ -210,8 +259,9 @@ def test_share_link_flow(world):
     assert admin.get("/api/shares").json()["shares"][0]["downloads"] == 1
 
     # The public server exposes nothing else.
-    assert public.get("/api/list").status_code == 404
-    assert public.get("/api/health").status_code == 404
+    # The all-in-one Go server serves the API at the same address, but only to signed-in apps.
+    assert public.get("/api/list").status_code in ((401, 404) if world.get("go") else (404,))
+    assert public.get("/api/health").status_code in ((200, 404) if world.get("go") else (404,))
     assert public.get("/s/not-a-real-token").status_code == 404
 
     # Links follow renames, and turning one off kills it.
@@ -235,7 +285,7 @@ def test_share_link_password_and_expiry(world):
     assert "Password" in public.get(f"/s/{t}").text
     assert "shh" not in public.get(f"/s/{t}/download").text       # no password, no file
     wrong = public.post(f"/s/{t}", data={"password": "nope"})
-    assert "That password isn&#x27;t right" in wrong.text
+    assert "That password isn" in wrong.text and "t right" in wrong.text
     right = public.post(f"/s/{t}", data={"password": "open sesame"})
     href = right.text.split('href="')[1].split('"')[0].replace("&amp;", "&")
     assert public.get(href).text == "shh"
@@ -248,6 +298,8 @@ def test_share_link_password_and_expiry(world):
     assert "Too many wrong tries" in public.post(f"/s/{t}", data={"password": "open sesame"}).text
 
     # Expired links are dead.
+    if world.get("go"):
+        return   # (needs the Python server's internals to make an already-expired link)
     links = world["api"].app.state.links
     expired = links.add("max", True, "secret.txt", False, time.time() - 1, None)
     assert public.get(f"/s/{expired.token}").status_code == 404
@@ -276,6 +328,8 @@ def test_tree_for_offline(world):
 
 
 def test_links_switch_requests(world):
+    if world.get("go"):
+        pytest.skip("checks the Python server's internals")
     admin, login, settings = world["admin"], world["login"], world["settings"]
     agent = settings.data_dir / "agent"
 

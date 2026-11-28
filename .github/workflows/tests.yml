@@ -50,6 +50,47 @@ jobs:
       - name: 50,000 files, a 1 GB upload, odd names, 20 users at once
         run: cd server && python tools/stress.py --files 50000 --big-gb 1
 
+  core:
+    # The new all-in-one server (Go). Checked by its own tests plus the same test
+    # suite, self-test and stress test as the current server.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Vet and unit tests
+        run: cd core && go vet ./... && go test -race ./...
+      - name: Build (with the race detector for the checks below)
+        run: cd core && go build -race -o /tmp/homedrive-core .
+      - name: Builds for every system
+        run: |
+          cd core
+          for t in darwin/arm64 darwin/amd64 windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null . && echo "built $t"
+          done
+      - name: Same test suite as the current server
+        run: |
+          pip install -r server/requirements.txt pytest httpx
+          cd server && HD_GO_BINARY=/tmp/homedrive-core python -m pytest -q
+      - name: Self-test
+        run: |
+          cd server
+          HOMEDRIVE_FILES=/tmp/hd/files HOMEDRIVE_DATA=/tmp/hd/data HOMEDRIVE_USERNAME=max \
+            HOMEDRIVE_PASSWORD=ci-password-123 HOMEDRIVE_PUBLIC_URL=http://127.0.0.1:18090 \
+            /tmp/homedrive-core -listen 127.0.0.1:18090 2> /tmp/core.log &
+          sleep 2
+          HD_URL=http://127.0.0.1:18090 HD_USER=max HD_PASSWORD=ci-password-123 \
+            HD_PUBLIC=http://127.0.0.1:18090 HD_DOCKER=false python selftest.py
+          ! grep -q "DATA RACE" /tmp/core.log
+      - name: Stress test
+        run: |
+          cd server && python tools/stress.py --files 50000 --big-gb 1 --go /tmp/homedrive-core 2>&1 | tee /tmp/stress.log
+          ! grep -q "DATA RACE" /tmp/stress.log
+
   mac:
     runs-on: macos-latest
     steps:

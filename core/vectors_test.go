@@ -1,0 +1,7 @@
+package main
+
+const pythonPwSalt = "c0b515908e61334cae6d6003c00be60e2e675878c9ac8ba282e1d70c335d3012"
+
+const pythonToken = "bWF4OjI6NDk0OTQzMDY3NTo1N2Q2OGQ4MzBmOGE2N2U3NzYwMWYyOThiMmY1ZWU1M2JmMzZiN2M2M2IxYjU2NDNkYmE3NGQwZTBmYTNmMzEy" // valid for 100 years
+const pythonHash = "scrypt$7022a11fedf55af78dc05fc806d27e57$c8b22a6dafb5b7180149fccb584b9de9dc85bd17826d0b8815a039cdc4680b89"
+const pythonSigned = "4318710676.3c36c25e94162c2ea5b27aa40d9183eb"

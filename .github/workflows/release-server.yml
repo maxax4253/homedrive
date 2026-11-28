@@ -8,7 +8,9 @@ name: Release server app
 on:
   push:
     tags: ["server-v*"]
-    branches: ["build-*"] # try the builds without publishing
+    # build-*: try the builds without publishing. release-server-v<version>: publish
+    # that version (same as pushing a server-v tag, for when tags can't be pushed).
+    branches: ["build-*", "release-server-v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -31,6 +33,7 @@ jobs:
           INPUT: ${{ github.event.inputs.version }}
         run: |
           if [[ "$REF" == server-v* ]]; then v="${REF#server-v}"; publish=true
+          elif [[ "$REF" == release-server-v* ]]; then v="${REF#release-server-v}"; publish=true
           elif [ -n "$INPUT" ]; then v="$INPUT"; publish=true
           else v="0.0.0-build.${GITHUB_RUN_NUMBER}"; publish=false; fi
           if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then echo "Bad version: $v"; exit 1; fi

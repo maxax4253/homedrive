@@ -128,6 +128,12 @@ case "${1:-help}" in
     sudo HOMEDRIVE_DIR="$DIR" /usr/local/bin/homedrive install-agent >/dev/null 2>&1 || true
     echo "Updated. Running at $(address)"
     ;;
+  selftest)
+    # End-to-end check of the running server; cleans up after itself.
+    HD_URL="$(address)" HD_USER="$(env_get HOMEDRIVE_USERNAME)" HD_PASSWORD="$(env_get HOMEDRIVE_PASSWORD)" \
+      HD_PUBLIC="$( [ "$(env_get LINKS)" = "1" ] && env_get PUBLIC_URL )" \
+      python3 "$SERVER/selftest.py"
+    ;;
   restart) compose restart ;;
   stop)    compose stop ;;
   start)   compose up -d ;;
@@ -269,6 +275,7 @@ homedrive: manage your HomeDrive server
   homedrive stop       stop the server
   homedrive start      start it again
   homedrive url        print the address to use in the Mac app
+  homedrive selftest   check that everything works (uploads, history, accounts, share links)
   homedrive password   change the admin password
 
   homedrive backup /mnt/backup   turn on nightly backups to that folder
